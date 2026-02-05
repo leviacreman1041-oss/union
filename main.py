@@ -51,10 +51,14 @@ def translate_cmd(chat_id, text):
 def extract_user(m):
     if m.reply_to_message: return m.reply_to_message.from_user.id
     p = m.text.split()
-    if len(p) > 1:
-        if p[1].isdigit(): return int(p[1])
-        if p[1].startswith("@"):
-            try: return bot.get_chat(p[1]).id
+    # تحسين استخراج اليوزر من أي مكان في النص
+    for word in p:
+        if word.isdigit(): return int(word)
+        if word.startswith("@"):
+            try:
+                # محاولة جلب الايدي من اليوزر
+                user_info = bot.get_chat(word)
+                return user_info.id
             except: return None
     return None
 
@@ -146,25 +150,26 @@ def handle_all(m):
             cursor.execute("DELETE FROM ranks WHERE chat_id=?", (chat_id,))
             conn.commit(); return bot.reply_to(m, "<b>⌯ تم تصفير جميع رتب المجموعة.</b>")
 
-    # --- [ الإدارة والتقييد الزمني ] ---
+    # --- [ الإدارة والتقييد الزمني وباليوزر ] ---
     admin_cmds = ["حظر", "كتم", "تقيد", "تقييد"]
     first_word = text.split()[0] if text else ""
     
     if first_word in admin_cmds and rank != "عضو":
-        if len(text.split()) <= 4: 
-            target = extract_user(m)
-            if not target: return
-            sec = parse_time(text)
-            until = int(time.time() + sec) if sec > 0 else 0
-            try:
-                if "حظر" in first_word: bot.ban_chat_member(chat_id, target, until_date=until)
-                else: bot.restrict_chat_member(chat_id, target, until_date=until, can_send_messages=False)
-                msg = f"<b>⌯ تم التنفيذ.</b>" + (f" لمدة {sec//60} دقيقة" if sec else "")
-                bot.reply_to(m, msg)
-            except: bot.reply_to(m, "⌯ لا املك صلاحية كافية.")
+        target = extract_user(m)
+        if not target: return bot.reply_to(m, "⌯ ايدي/معرف/بالرد.")
+        
+        sec = parse_time(text)
+        until = int(time.time() + sec) if sec > 0 else 0
+        try:
+            if "حظر" in first_word: bot.ban_chat_member(chat_id, target, until_date=until)
+            else: bot.restrict_chat_member(chat_id, target, until_date=until, can_send_messages=False)
+            
+            time_str = f" لمدة {sec//60} دقيقة" if sec > 0 else " بشكل دائم"
+            bot.reply_to(m, f"<b>⌯ تم {first_word} المستخدم {time_str}.</b>")
+        except: bot.reply_to(m, "⌯ لا املك صلاحية كافية.")
 
     # --- [ ميزة رفع القيود ] ---
-    if text == "رفع القيود" and rank != "عضو":
+    if text.startswith("رفع القيود") and rank != "عضو":
         target = extract_user(m)
         if not target: return bot.reply_to(m, "⌯ ايدي/معرف/بالرد.")
         try:
