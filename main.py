@@ -99,11 +99,16 @@ def handle_all(m):
 
     # نظام الحالات الذكي
     if user_id in user_states:
+        # إضافة ميزة الإلغاء
+        if raw_text == "الغاء":
+            del user_states[user_id]
+            return bot.reply_to(m, "<b>⌯ تم إلغاء العملية بنجاح.</b>")
+            
         state = user_states[user_id]
         if state['type'] == 'change_cmd':
             if state['step'] == 1:
                 user_states[user_id].update({'old': raw_text, 'step': 2})
-                return bot.reply_to(m, f"<b>⌯ تم اختيار: ({raw_text})\n⌯ ارسل الكلمة البديلة الآن:</b>")
+                return bot.reply_to(m, f"<b>⌯ تم اختيار: ({raw_text})\n⌯ ارسل الكلمة البديلة الآن:\n(للالغاء ارسل 'الغاء')</b>")
             else:
                 cursor.execute("INSERT OR REPLACE INTO custom_cmds VALUES (?,?,?)", (chat_id, state['old'], raw_text))
                 conn.commit(); del user_states[user_id]
@@ -112,7 +117,7 @@ def handle_all(m):
         elif state['type'] == 'add_resp':
             if state['step'] == 1:
                 user_states[user_id].update({'trig': raw_text, 'step': 2})
-                return bot.reply_to(m, "<b>⌯ ارسل الكلمة التي تريد الرد عليها:</b>")
+                return bot.reply_to(m, "<b>⌯ ارسل الرد الآن (نص، صورة، ملصق.. إلخ):\n(للالغاء ارسل 'الغاء')</b>")
             else:
                 c_type = m.content_type
                 f_id = raw_text if c_type == 'text' else (m.photo[-1].file_id if c_type == 'photo' else getattr(m, c_type).file_id)
@@ -195,14 +200,33 @@ def handle_all(m):
                 else: cursor.execute("DELETE FROM locks WHERE chat_id=? AND item=?", (chat_id, item_db))
                 conn.commit(); bot.reply_to(m, f"<b>⌯ تم {text.split()[0]} {item_name}</b>")
 
+    # --- [ أوامر الردود الجديدة ] ---
+    if text == "الردود" and rank in ["مطور", "مالك اساسي", "مالك", "مدير"]:
+        cursor.execute("SELECT trigger FROM responses WHERE chat_id=?", (chat_id,))
+        res = cursor.fetchall()
+        if not res: return bot.reply_to(m, "<b>⌯ لا توجد ردود مضافة.</b>")
+        list_msg = "<b>⌯ قائمة الردود المضافة:</b>\n" + "\n".join([f"• {r[0]}" for r in res])
+        return bot.reply_to(m, list_msg)
+
+    if text == "مسح الردود" and rank in ["مطور", "مالك اساسي", "مالك"]:
+        cursor.execute("DELETE FROM responses WHERE chat_id=?", (chat_id,))
+        conn.commit()
+        return bot.reply_to(m, "<b>⌯ تم مسح جميع الردود بنجاح.</b>")
+
+    if text.startswith("مسح رد ") and rank in ["مطور", "مالك اساسي", "مالك", "مدير"]:
+        trigger_to_del = text.replace("مسح رد ", "").strip()
+        cursor.execute("DELETE FROM responses WHERE chat_id=? AND trigger=?", (chat_id, trigger_to_del))
+        conn.commit()
+        return bot.reply_to(m, f"<b>⌯ تم مسح الرد ({trigger_to_del}) بنجاح.</b>")
+
     # --- [ أوامر المعلومات ] ---
     if text == "تغيير امر" and rank in ["مطور", "مالك اساسي"]:
         user_states[user_id] = {'type': 'change_cmd', 'step': 1}
-        return bot.reply_to(m, "<b>⌯ ارسل الكلمة الاصلية (مثلا: حظر):</b>")
+        return bot.reply_to(m, "<b>⌯ ارسل الكلمة الاصلية (مثلا: حظر):\n(للالغاء ارسل 'الغاء')</b>")
 
     if text == "اضف رد" and rank != "عضو":
         user_states[user_id] = {'type': 'add_resp', 'step': 1}
-        return bot.reply_to(m, "<b>⌯ ارسل الكلمة التي تريد الرد عليها:</b>")
+        return bot.reply_to(m, "<b>⌯ ارسل الكلمة التي تريد الرد عليها:\n(للالغاء ارسل 'الغاء')</b>")
 
     if text == "ايدي":
         cursor.execute("SELECT msgs FROM stats WHERE chat_id=? AND user_id=?", (chat_id, user_id))
