@@ -178,7 +178,6 @@ def handle_all(m):
     # --- [ القفل والفتح والتحكم الكلي ] ---
     l_map = {"الصور":"photo", "الفيديو":"video", "الروابط":"links", "الدردشه":"chat", "الملصقات":"sticker", "المتحركات":"animation"}
     
-    # ميزة قفل الكل وفتح الكل
     if text in ["قفل الكل", "فتح الكل"] and rank in ["مطور", "مالك اساسي", "مالك", "مدير"]:
         if text == "قفل الكل":
             for item in l_map.values():
@@ -215,10 +214,11 @@ def handle_all(m):
     if text.startswith("مسح رد ") and rank in ["مطور", "مالك اساسي", "مالك", "مدير"]:
         trigger_to_del = text.replace("مسح رد ", "").strip()
         cursor.execute("DELETE FROM responses WHERE chat_id=? AND trigger=?", (chat_id, trigger_to_del))
-        conn.commit(); return bot.reply_to(m, f"<b>⌯ تم مسح الرد ({trigger_to_del}) بنجاح.</b>")
+        conn.commit()
+        return bot.reply_to(m, f"<b>⌯ تم مسح الرد ({trigger_to_del}) بنجاح.</b>")
 
-    # --- [ نظام الكشف ] ---
-    if text.startswith("كشف") and len(text.split()) <= 2:
+    # --- [ نظام الكشف (جديد) 🔥 ] ---
+    if text.startswith("كشف") and len(text.split()) <= 2 and text != "كشف المجموعه":
         target_id = extract_user(m)
         if not target_id: return bot.reply_to(m, "<b>⌯ ايدي/معرف/بالرد.</b>")
         try:
@@ -228,10 +228,12 @@ def handle_all(m):
             bio = u_info.bio if u_info.bio else "لا يوجد"
         except:
             name, user_n, bio = "مستخدم غادر/غير معروف", "غير معروف", "غير معروف"
+        
         t_rank = get_rank(chat_id, target_id)
         cursor.execute("SELECT msgs FROM stats WHERE chat_id=? AND user_id=?", (chat_id, target_id))
         st = cursor.fetchone()
         msgs_count = st[0] if st else 0
+        
         caption = (f"<b>👤 معلومات المستخدم:</b>\n\n"
                    f"<b>• الاسم:</b> {name}\n"
                    f"<b>• الايدي:</b> <code>{target_id}</code>\n"
@@ -245,6 +247,7 @@ def handle_all(m):
         cursor.execute("SELECT user_id, rank FROM ranks WHERE chat_id=?", (chat_id,))
         db_ranks = cursor.fetchall()
         if not db_ranks: return bot.reply_to(m, "<b>⌯ لا توجد رتب مضافة في القاعدة.</b>")
+        
         list_msg = "<b>📊 قائمة رتب المجموعه:</b>\n\n"
         for uid, rnk in db_ranks:
             try:
