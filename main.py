@@ -99,7 +99,6 @@ def handle_all(m):
 
     # نظام الحالات الذكي
     if user_id in user_states:
-        # إضافة ميزة الإلغاء
         if raw_text == "الغاء":
             del user_states[user_id]
             return bot.reply_to(m, "<b>⌯ تم إلغاء العملية بنجاح.</b>")
@@ -164,32 +163,33 @@ def handle_all(m):
                 bot.reply_to(m, msg)
             except: bot.reply_to(m, "⌯ لا املك صلاحية كافية.")
 
-    # --- [ ميزة رفع القيود (تعديل ليفاي: فك بدون حظر) 🔥 ] ---
+    # --- [ ميزة رفع القيود ] ---
     if text == "رفع القيود" and rank != "عضو":
         target = extract_user(m)
         if not target: return bot.reply_to(m, "⌯ ايدي/معرف/بالرد.")
         try:
-            bot.restrict_chat_member(
-                chat_id, target,
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True,
-                can_send_polls=True,
-                can_invite_users=True,
-                can_pin_messages=True,
-                can_change_info=True
-            )
+            bot.restrict_chat_member(chat_id, target, can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True, can_send_polls=True, can_invite_users=True, can_pin_messages=True, can_change_info=True)
             member_status = bot.get_chat_member(chat_id, target).status
             if member_status in ['left', 'kicked']:
                 bot.unban_chat_member(chat_id, target, only_if_banned=True)
-            
             bot.reply_to(m, f"<b>⌯ تم رفع كافة القيود والكتم عن المستخدم بنجاح.</b>")
-        except Exception as e:
-            bot.reply_to(m, "⌯ فشل التنفيذ، تأكد من صلاحيات البوت.")
+        except: bot.reply_to(m, "⌯ فشل التنفيذ، تأكد من صلاحيات البوت.")
 
-    # --- [ القفل والفتح ] ---
+    # --- [ القفل والفتح والتحكم الكلي ] ---
     l_map = {"الصور":"photo", "الفيديو":"video", "الروابط":"links", "الدردشه":"chat", "الملصقات":"sticker", "المتحركات":"animation"}
+    
+    # ميزة قفل الكل وفتح الكل
+    if text in ["قفل الكل", "فتح الكل"] and rank in ["مطور", "مالك اساسي", "مالك", "مدير"]:
+        if text == "قفل الكل":
+            for item in l_map.values():
+                cursor.execute("INSERT OR IGNORE INTO locks VALUES (?,?)", (chat_id, item))
+            conn.commit()
+            return bot.reply_to(m, "<b>⌯ تم قفل جميع الوسائط والروابط والدردشة بنجاح.</b>")
+        else:
+            cursor.execute("DELETE FROM locks WHERE chat_id=?", (chat_id,))
+            conn.commit()
+            return bot.reply_to(m, "<b>⌯ تم فتح جميع الوسائط والروابط والدردشة بنجاح.</b>")
+
     if text.startswith(("قفل ", "فتح ")) and rank != "عضو":
         parts = text.split()
         if len(parts) > 1:
@@ -200,7 +200,7 @@ def handle_all(m):
                 else: cursor.execute("DELETE FROM locks WHERE chat_id=? AND item=?", (chat_id, item_db))
                 conn.commit(); bot.reply_to(m, f"<b>⌯ تم {text.split()[0]} {item_name}</b>")
 
-    # --- [ أوامر الردود الجديدة ] ---
+    # --- [ أوامر الردود ] ---
     if text == "الردود" and rank in ["مطور", "مالك اساسي", "مالك", "مدير"]:
         cursor.execute("SELECT trigger FROM responses WHERE chat_id=?", (chat_id,))
         res = cursor.fetchall()
@@ -210,14 +210,51 @@ def handle_all(m):
 
     if text == "مسح الردود" and rank in ["مطور", "مالك اساسي", "مالك"]:
         cursor.execute("DELETE FROM responses WHERE chat_id=?", (chat_id,))
-        conn.commit()
-        return bot.reply_to(m, "<b>⌯ تم مسح جميع الردود بنجاح.</b>")
+        conn.commit(); return bot.reply_to(m, "<b>⌯ تم مسح جميع الردود بنجاح.</b>")
 
     if text.startswith("مسح رد ") and rank in ["مطور", "مالك اساسي", "مالك", "مدير"]:
         trigger_to_del = text.replace("مسح رد ", "").strip()
         cursor.execute("DELETE FROM responses WHERE chat_id=? AND trigger=?", (chat_id, trigger_to_del))
-        conn.commit()
-        return bot.reply_to(m, f"<b>⌯ تم مسح الرد ({trigger_to_del}) بنجاح.</b>")
+        conn.commit(); return bot.reply_to(m, f"<b>⌯ تم مسح الرد ({trigger_to_del}) بنجاح.</b>")
+
+    # --- [ نظام الكشف ] ---
+    if text.startswith("كشف") and len(text.split()) <= 2:
+        target_id = extract_user(m)
+        if not target_id: return bot.reply_to(m, "<b>⌯ ايدي/معرف/بالرد.</b>")
+        try:
+            u_info = bot.get_chat(target_id)
+            name = u_info.first_name + (f" {u_info.last_name}" if u_info.last_name else "")
+            user_n = f"@{u_info.username}" if u_info.username else "لا يوجد"
+            bio = u_info.bio if u_info.bio else "لا يوجد"
+        except:
+            name, user_n, bio = "مستخدم غادر/غير معروف", "غير معروف", "غير معروف"
+        t_rank = get_rank(chat_id, target_id)
+        cursor.execute("SELECT msgs FROM stats WHERE chat_id=? AND user_id=?", (chat_id, target_id))
+        st = cursor.fetchone()
+        msgs_count = st[0] if st else 0
+        caption = (f"<b>👤 معلومات المستخدم:</b>\n\n"
+                   f"<b>• الاسم:</b> {name}\n"
+                   f"<b>• الايدي:</b> <code>{target_id}</code>\n"
+                   f"<b>• اليوزر:</b> {user_n}\n"
+                   f"<b>• الرتبة:</b> {t_rank}\n"
+                   f"<b>• الرسائل:</b> {msgs_count}\n"
+                   f"<b>• البايو:</b> <code>{bio}</code>")
+        return bot.reply_to(m, caption)
+
+    if text == "كشف المجموعه" and rank in ["مطور", "مالك اساسي", "مالك"]:
+        cursor.execute("SELECT user_id, rank FROM ranks WHERE chat_id=?", (chat_id,))
+        db_ranks = cursor.fetchall()
+        if not db_ranks: return bot.reply_to(m, "<b>⌯ لا توجد رتب مضافة في القاعدة.</b>")
+        list_msg = "<b>📊 قائمة رتب المجموعه:</b>\n\n"
+        for uid, rnk in db_ranks:
+            try:
+                member = bot.get_chat_member(chat_id, uid).user
+                u_name = member.first_name
+                u_link = f"@{member.username}" if member.username else f"<code>{uid}</code>"
+            except:
+                u_name, u_link = "غادر المجموعه", f"<code>{uid}</code>"
+            list_msg += f"<b>• {rnk} :</b> {u_name} ({u_link})\n"
+        return bot.reply_to(m, list_msg)
 
     # --- [ أوامر المعلومات ] ---
     if text == "تغيير امر" and rank in ["مطور", "مالك اساسي"]:
@@ -247,8 +284,6 @@ def handle_all(m):
     if rank == "عضو":
         cursor.execute("SELECT item FROM locks WHERE chat_id=?", (chat_id,))
         current_locks = [r[0] for r in cursor.fetchall()]
-        
-        # ميزة توحيد الاتحاد للصور والمتحركات والملصقات المقفولة (تعديل ليفاي الجديد)
         if m.content_type in ['photo', 'animation', 'sticker'] and m.content_type in current_locks:
             full_name = (m.from_user.first_name or "") + (m.from_user.last_name or "")
             if "UI" not in full_name:
@@ -257,7 +292,6 @@ def handle_all(m):
                     msg_text = f"<b>المستخدم {m.from_user.first_name}\nيـرجـى وضـع الـتـوحـيـد الـخـاص بـالاتـحـاد الـعـربـي ᴜɪ</b>"
                     return bot.send_message(chat_id, msg_text)
                 except: pass
-
         if m.content_type in current_locks:
             bot.delete_message(chat_id, m.message_id); return
         if "links" in current_locks and re.search(r't\.me/|http', raw_text):
