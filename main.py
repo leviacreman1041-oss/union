@@ -73,24 +73,23 @@ def translate_cmd(chat_id, text):
     return text.replace(word, res[0], 1) if res else text
 
 def extract_user(m):
-    # 1. بالرد
+    # 1. بالرد (الأولوية القصوى)
     if m.reply_to_message:
         return m.reply_to_message.from_user.id
     
-    # 2. البحث عن يوزر في الرسالة (Entities)
+    # 2. البحث عن المنشن @ في النص (Entities)
     if m.entities:
         for entity in m.entities:
             if entity.type == 'mention':
-                # تم تحسين استخراج اليوزر ليعمل حتى لو كان هناك كلام قبل الـ @
                 username = m.text[entity.offset:entity.offset + entity.length]
                 try:
                     user_info = bot.get_chat(username)
                     return user_info.id
-                except: continue 
+                except: continue
             if entity.type == 'text_mention':
                 return entity.user.id
     
-    # 3. البحث اليدوي عن معرف (في حال فشل الـ Entities)
+    # 3. البحث اليدوي عن معرف (Regex) في حال كتابة يوزر بدون منشن رسمي
     mention = re.search(r'@(\w+)', m.text)
     if mention:
         try:
@@ -98,7 +97,7 @@ def extract_user(m):
             return user_info.id
         except: pass
 
-    # 4. البحث عن آيدي رقمي في النص
+    # 4. البحث عن آيدي رقمي (يجب أن يكون الرقم طويلاً لتمييزه عن الوقت)
     p = m.text.split()
     for word in p:
         if word.isdigit() and len(word) > 7:
@@ -107,12 +106,15 @@ def extract_user(m):
     return None
 
 def parse_time(text):
-    match = re.search(r'(\d+)\s*(دقيقه|دقيقة|ساعه|ساعة|يوم|ايام)', text)
+    # تحسين التعرف على الوقت ليشمل صيغ متعددة
+    match = re.search(r'(\d+)\s*(دقيقه|دقيقة|ساعه|ساعة|يوم|ايام|يومين)', text)
     if not match: return 0
     val, unit = int(match.group(1)), match.group(2)
     if 'دقيق' in unit: return val * 60
     if 'ساع' in unit: return val * 3600
-    return val * 86400 if 'يوم' in unit or 'ايام' in unit else 0
+    if 'يوم' in unit or 'ايام' in unit: return val * 86400
+    if unit == 'يومين': return 172800
+    return 0
 
 # --- [ المعالج الرئيسي ] ---
 @bot.message_handler(func=lambda m: True, content_types=['text','photo','sticker','video','animation','voice','video_note','document'])
