@@ -81,15 +81,24 @@ def extract_user(m):
     if m.entities:
         for entity in m.entities:
             if entity.type == 'mention':
+                # تم تحسين استخراج اليوزر ليعمل حتى لو كان هناك كلام قبل الـ @
                 username = m.text[entity.offset:entity.offset + entity.length]
                 try:
                     user_info = bot.get_chat(username)
                     return user_info.id
-                except: return None
+                except: continue 
             if entity.type == 'text_mention':
                 return entity.user.id
     
-    # 3. البحث عن آيدي رقمي في النص
+    # 3. البحث اليدوي عن معرف (في حال فشل الـ Entities)
+    mention = re.search(r'@(\w+)', m.text)
+    if mention:
+        try:
+            user_info = bot.get_chat(mention.group(0))
+            return user_info.id
+        except: pass
+
+    # 4. البحث عن آيدي رقمي في النص
     p = m.text.split()
     for word in p:
         if word.isdigit() and len(word) > 7:
