@@ -155,6 +155,13 @@ def handle_all(m):
         if not rows: msg = "<b>⌯ لا توجد رتب مضافة في قاعدة البيانات بعد.</b>"
         return bot.reply_to(m, msg)
 
+    # --- [ إضافة: رتبته ] ---
+    if text.startswith("رتبته"):
+        target_id = extract_user(m)
+        if not target_id: return bot.reply_to(m, "<b>⌯ عذراً، يجب استخدام الرد أو المعرف @ بشكل صحيح.</b>")
+        t_rank = get_rank(chat_id, target_id)
+        return bot.reply_to(m, f"<b>🎖 رتبة المستخدم هي: {t_rank}</b>")
+
     if text.startswith(("رفع ", "تنزيل ")):
         if rank == "عضو" or rank == "مميز": return
         target = extract_user(m)
@@ -243,5 +250,5 @@ def handle_all(m):
 
 if __name__ == "__main__":
     bot.remove_webhook()
-    print("🚀 تم تحديث البوت بإضافة قائمة الرتب الشاملة!")
+    print("🚀 تم تحديث البوت بإضافة قائمة الرتب وأمر رتبته!")
     bot.infinity_polling(skip_pending=True)
