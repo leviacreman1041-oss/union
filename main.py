@@ -62,6 +62,23 @@ def translate_cmd(chat_id, text):
     return text.replace(word, res[0], 1) if res else text
 
 def extract_user(m):
+    # 1. البحث في الكيانات (Entities) لاستخراج الآيدي مباشرة إذا كان تليجرام تعرف عليه
+    if m.entities:
+        for entity in m.entities:
+            if entity.type == 'text_mention':
+                return entity.user.id
+            if entity.type == 'mention':
+                try:
+                    user_text = m.text[entity.offset:entity.offset + entity.length]
+                    user_info = bot.get_chat(user_text)
+                    return user_info.id
+                except: pass
+
+    # 2. إذا كان رداً على رسالة
+    if m.reply_to_message:
+        return m.reply_to_message.from_user.id
+    
+    # 3. البحث اليدوي عن المعرف @ أو الآيدي الرقمي
     text_to_search = m.text or m.caption or ""
     mention = re.search(r'@(\w+)', text_to_search)
     if mention:
@@ -69,8 +86,7 @@ def extract_user(m):
             user_info = bot.get_chat(mention.group(0))
             return user_info.id
         except: pass
-    if m.reply_to_message:
-        return m.reply_to_message.from_user.id
+
     p = text_to_search.split()
     for word in p:
         if word.isdigit() and len(word) > 7:
@@ -250,5 +266,5 @@ def handle_all(m):
 
 if __name__ == "__main__":
     bot.remove_webhook()
-    print("🚀 تم تحديث البوت بإضافة قائمة الرتب وأمر رتبته!")
+    print("🚀 تم إصلاح مشكلة الحظر والرفع باليوزر!")
     bot.infinity_polling(skip_pending=True)
