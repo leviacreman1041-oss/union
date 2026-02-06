@@ -43,11 +43,24 @@ spam_tracker = {}
 
 # --- [ الدوال الذكية ] ---
 def get_rank(chat_id, user_id):
+    # قائمة المطورين بالآيدي (أصحاب البوت الدائمين)
+    S_DEVELOPERS = [1358013723, 8147516847]
+    
     try:
+        # التحقق إذا كان الشخص في قائمة المطورين الثابتة
+        if user_id in S_DEVELOPERS: 
+            return "مطور"
+            
         u = bot.get_chat_member(chat_id, user_id)
-        if u.user.username == DEV_USERNAME: return "مطور"
-        if u.status == 'creator': return "مالك اساسي"
-    except: pass
+        # التحقق من يوزر المطور الأساسي
+        if u.user.username == DEV_USERNAME: 
+            return "مطور"
+        # منشئ المجموعة
+        if u.status == 'creator': 
+            return "مالك اساسي"
+    except: 
+        pass
+
     cursor.execute("SELECT rank FROM ranks WHERE chat_id=? AND user_id=?", (str(chat_id), user_id))
     res = cursor.fetchone()
     return res[0] if res else "عضو"
