@@ -44,21 +44,30 @@ def get_rank(chat_id, user_id):
 def extract_user(m):
     # 1. بالرد
     if m.reply_to_message: return m.reply_to_message.from_user.id
+    
     text = m.text or m.caption or ""
-    # 2. بالمنشن @
-    if m.entities:
-        for ent in m.entities:
-            if ent.type == "mention":
-                un = text[ent.offset:ent.offset+ent.length].replace("@", "").lower()
-                cursor.execute("SELECT user_id FROM user_cache WHERE username=?", (un,))
-                res = cursor.fetchone()
-                if res: return res[0]
-                try: return bot.get_chat(f"@{un}").id
-                except: pass
-            if ent.type == "text_mention": return ent.user.id
-    # 3. بالايدي الرقمي
-    nums = re.findall(r'\d{7,}', text)
-    if nums: return int(nums[0])
+    parts = text.split()
+    
+    # 2. بالمنشن @ أو اليوزر المكتوب
+    for part in parts:
+        if part.startswith("@"):
+            un = part.replace("@", "").lower()
+            cursor.execute("SELECT user_id FROM user_cache WHERE username=?", (un,))
+            res = cursor.fetchone()
+            if res: return res[0]
+            try: return bot.get_chat(f"@{un}").id
+            except: pass
+        
+        # البحث عن الايدي الرقمي
+        if part.isdigit() and len(part) > 7:
+            return int(part)
+
+    # 3. محاولة البحث في الكاش بالاسم المكتوب (بدون @)
+    for part in parts:
+        cursor.execute("SELECT user_id FROM user_cache WHERE username=?", (part.lower(),))
+        res = cursor.fetchone()
+        if res: return res[0]
+        
     return None
 
 def get_rank_list(chat_id, target_rank):
@@ -79,7 +88,6 @@ def handle_all(m):
     if m.chat.type == 'private': return
     chat_id, user_id = str(m.chat.id), m.from_user.id
     
-    # تحديث الكاش لضمان عمل الأوامر باليوزر
     if m.from_user.username:
         cursor.execute("INSERT OR REPLACE INTO user_cache VALUES (?,?)", (user_id, m.from_user.username.lower()))
         conn.commit()
@@ -87,7 +95,7 @@ def handle_all(m):
     rank = get_rank(chat_id, user_id)
     raw_text = (m.text or m.caption or "").strip()
 
-    # 1. فحص قفل الدردشة والأقفال
+    # 1. الأقفال والدردشة
     cursor.execute("SELECT item FROM locks WHERE chat_id=?", (chat_id,))
     active_locks = [r[0] for r in cursor.fetchall()]
 
@@ -99,7 +107,7 @@ def handle_all(m):
             try: bot.delete_message(chat_id, m.message_id); return
             except: pass
 
-    # 2. نظام Anti-Spam
+    # 2. مضاد التكرار
     if rank == "عضو":
         now = time.time()
         if chat_id not in spam_tracker: spam_tracker[chat_id] = {}
@@ -107,67 +115,40 @@ def handle_all(m):
         spam_tracker[chat_id][user_id] = [t for t in spam_tracker[chat_id][user_id] if now - t < 5]
         spam_tracker[chat_id][user_id].append(now)
         if len(spam_tracker[chat_id][user_id]) >= 6:
-            bot.restrict_chat_member(chat_id, user_id, until_date=int(now + 21600))
-            return bot.reply_to(m, "<b>⌯ تم تقييدك 6 ساعات بسبب التكرار.</b>")
+            try:
+                bot.restrict_chat_member(chat_id, user_id, until_date=int(now + 21600))
+                return bot.reply_to(m, "<b>⌯ تم تقييدك 6 ساعات بسبب التكرار.</b>")
+            except: pass
 
-    # 3. أوامر قوائم الرتب
-    list_cmds = {
-        "المميزين": "مميز",
-        "الادمنيه": "ادمن",
-        "المدراء": "مدير",
-        "المالكين": "مالك",
-        "المالكين الاساسيين": "مالك اساسي"
-    }
+    # 3. القوائم
+    list_cmds = {"المميزين": "مميز", "الادمنيه": "ادمن", "المدراء": "مدير", "المالكين": "مالك", "المالكين الاساسيين": "مالك اساسي"}
     if raw_text in list_cmds:
         if RANK_VALUES.get(rank, 0) > RANK_VALUES.get(list_cmds[raw_text], 0):
             return bot.reply_to(m, get_rank_list(chat_id, list_cmds[raw_text]))
 
-    # 4. رتبتي ورتبته (إصلاح شامل)
-    if raw_text == "رتبتي":
-        return bot.reply_to(m, f"<b>⌯ رتبتك هي: {rank}</b>")
-
+    # 4. الرتب
+    if raw_text == "رتبتي": return bot.reply_to(m, f"<b>⌯ رتبتك هي: {rank}</b>")
     if raw_text.startswith("رتبته"):
         target = extract_user(m)
         if target:
             t_rank = get_rank(chat_id, target)
             return bot.reply_to(m, f"<b>⌯ رتبته هي: {t_rank}</b>")
-        else:
-            return bot.reply_to(m, "<b>⌯ منشن المستخدم أو رد عليه.</b>")
+        return bot.reply_to(m, "<b>⌯ منشن المستخدم أو اكتب يوزره.</b>")
 
-    # 5. قفل وفتح الدردشة
+    # 5. قفل/فتح الدردشة
     if raw_text == "قفل الدردشه" and rank not in ["عضو", "مميز", "ادمن"]:
         cursor.execute("INSERT OR IGNORE INTO locks VALUES (?,?)", (chat_id, "chat"))
-        conn.commit(); return bot.reply_to(m, "<b>⌯ تم قفل الدردشة بنجاح.</b>")
-    
+        conn.commit(); return bot.reply_to(m, "<b>⌯ تم قفل الدردشة.</b>")
     if raw_text == "فتح الدردشه" and rank not in ["عضو", "مميز", "ادمن"]:
         cursor.execute("DELETE FROM locks WHERE chat_id=? AND item=?", (chat_id, "chat"))
-        conn.commit(); return bot.reply_to(m, "<b>⌯ تم فتح الدردشة بنجاح.</b>")
+        conn.commit(); return bot.reply_to(m, "<b>⌯ تم فتح الدردشة.</b>")
 
-    # 6. إضافة رد وتغيير أمر (نظام الحالات)
-    if user_id in user_states:
-        state = user_states[user_id]
-        if raw_text == "الغاء":
-            del user_states[user_id]; return bot.reply_to(m, "<b>⌯ تم إلغاء العملية.</b>")
-        if state['type'] == 'add_resp':
-            if state['step'] == 1:
-                user_states[user_id].update({'trig': raw_text, 'step': 2})
-                return bot.reply_to(m, "<b>⌯ تمام، ارسل الرد الآن:</b>")
-            else:
-                c_type = m.content_type
-                f_id = raw_text if c_type == 'text' else (m.photo[-1].file_id if c_type == 'photo' else getattr(m, c_type).file_id)
-                cursor.execute("INSERT INTO responses VALUES (?,?,?,?,?)", (chat_id, state['trig'], f_id, c_type, m.caption))
-                conn.commit(); del user_states[user_id]
-                return bot.reply_to(m, "<b>⌯ تم حفظ الرد.</b>")
-
-    if raw_text == "اضف رد" and rank != "عضو":
-        user_states[user_id] = {'type': 'add_resp', 'step': 1}
-        return bot.reply_to(m, "<b>⌯ ارسل الكلمة التي تريد الرد عليها:</b>")
-
-    # [رفع / تنزيل]
+    # 6. الرفع والتنزيل (يدعم اليوزر)
     if raw_text.startswith(("رفع ", "تنزيل ")):
         if rank in ["عضو", "مميز"]: return
         target = extract_user(m)
         if not target: return bot.reply_to(m, "<b>⌯ لم أتعرف على المستخدم.</b>")
+        
         for r in ["مدير", "ادمن", "مميز", "مالك", "مالك اساسي"]:
             if r in raw_text:
                 if raw_text.startswith("رفع"):
@@ -178,7 +159,27 @@ def handle_all(m):
                     msg = f"تنزيل {r}"
                 conn.commit(); return bot.reply_to(m, f"<b>⌯ تم {msg} بنجاح.</b>")
 
-    # [تشغيل الردود]
+    # 7. الردود
+    if raw_text == "اضف رد" and rank != "عضو":
+        user_states[user_id] = {'type': 'add_resp', 'step': 1}
+        return bot.reply_to(m, "<b>⌯ ارسل الكلمة الآن:</b>")
+
+    if user_id in user_states:
+        state = user_states[user_id]
+        if raw_text == "الغاء":
+            del user_states[user_id]; return bot.reply_to(m, "<b>⌯ تم الإلغاء.</b>")
+        if state['type'] == 'add_resp':
+            if state['step'] == 1:
+                user_states[user_id].update({'trig': raw_text, 'step': 2})
+                return bot.reply_to(m, "<b>⌯ ارسل الرد الآن:</b>")
+            else:
+                c_type = m.content_type
+                f_id = raw_text if c_type == 'text' else (m.photo[-1].file_id if c_type == 'photo' else getattr(m, c_type).file_id)
+                cursor.execute("INSERT INTO responses VALUES (?,?,?,?,?)", (chat_id, state['trig'], f_id, c_type, m.caption))
+                conn.commit(); del user_states[user_id]
+                return bot.reply_to(m, "<b>⌯ تم حفظ الرد.</b>")
+
+    # تشغيل الردود
     cursor.execute("SELECT reply_data, type, caption FROM responses WHERE chat_id=? AND trigger=?", (chat_id, raw_text))
     res = cursor.fetchone()
     if res:
@@ -187,5 +188,5 @@ def handle_all(m):
 
 if __name__ == "__main__":
     bot.remove_webhook()
-    print("🚀 تم تحديث النظام يا ليفاي! القوائم والدردشة تعمل الآن.")
+    print("🚀 البوت جاهز يا ليفاي! الرفع باليوزر شغال الآن.")
     bot.infinity_polling(skip_pending=True)
