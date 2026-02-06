@@ -12,6 +12,17 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 DB_NAME = "master_legend_v16.db"
 db_lock = Lock()
 
+# قيم الرتب للمقارنة (الأعلى يسيطر على الأقل)
+RANK_VALUES = {
+    "مطور": 100,
+    "مالك اساسي": 90,
+    "مالك": 80,
+    "مدير": 70,
+    "ادمن": 60,
+    "مميز": 50,
+    "عضو": 10
+}
+
 # --- [ إعداد قاعدة البيانات ] ---
 def setup_db():
     with db_lock:
@@ -51,12 +62,10 @@ def translate_cmd(chat_id, text):
 def extract_user(m):
     if m.reply_to_message: return m.reply_to_message.from_user.id
     p = m.text.split()
-    # تحسين استخراج اليوزر من أي مكان في النص
     for word in p:
         if word.isdigit(): return int(word)
         if word.startswith("@"):
             try:
-                # محاولة جلب الايدي من اليوزر
                 user_info = bot.get_chat(word)
                 return user_info.id
             except: return None
@@ -130,10 +139,16 @@ def handle_all(m):
 
     # --- [ أوامر الرفع والتنزيل ] ---
     if text.startswith(("رفع ", "تنزيل ")):
-        if rank not in ["مطور", "مالك اساسي", "مالك"]: return
+        if rank == "عضو" or rank == "مميز": return
         target = extract_user(m)
         if not target: return bot.reply_to(m, "⌯ ايدي/معرف/بالرد.")
         
+        target_rank = get_rank(chat_id, target)
+        
+        # منع رفع أو تنزيل من هو بنفس رتبتك أو أعلى
+        if RANK_VALUES.get(rank, 0) <= RANK_VALUES.get(target_rank, 0) and user_id != target:
+             return bot.reply_to(m, "<b>⌯ لا يمكنك التحكم برتبة شخص مساوٍ لك أو أعلى منك.</b>")
+
         if text == "تنزيل الكل":
             cursor.execute("DELETE FROM ranks WHERE chat_id=? AND user_id=?", (chat_id, target))
             conn.commit(); return bot.reply_to(m, "<b>⌯ تم تنزيل الشخص من جميع الرتب.</b>")
@@ -141,6 +156,10 @@ def handle_all(m):
         r_list = ["مشرف", "مالك اساسي", "مالك", "مدير", "ادمن", "مميز"]
         for r in r_list:
             if r in text:
+                # الأدمن يرفع مميز فقط (عضو لمميز)
+                if rank == "ادمن" and r != "مميز":
+                    return bot.reply_to(m, "<b>⌯ كـ (ادمن) يمكنك رفع رتبة (مميز) فقط.</b>")
+                
                 if text.startswith("رفع"): cursor.execute("INSERT INTO ranks VALUES (?,?,?)", (chat_id, target, r))
                 else: cursor.execute("DELETE FROM ranks WHERE chat_id=? AND user_id=? AND rank=?", (chat_id, target, r))
                 conn.commit(); return bot.reply_to(m, f"<b>⌯ تم {text.split()[0]} {r}</b>")
@@ -154,22 +173,32 @@ def handle_all(m):
     admin_cmds = ["حظر", "كتم", "تقيد", "تقييد"]
     first_word = text.split()[0] if text else ""
     
-    if first_word in admin_cmds and rank != "عضو":
+    if first_word in admin_cmds and rank not in ["عضو", "مميز"]:
         target = extract_user(m)
         if not target: return bot.reply_to(m, "⌯ ايدي/معرف/بالرد.")
         
+        target_rank = get_rank(chat_id, target)
+        if RANK_VALUES.get(rank, 0) <= RANK_VALUES.get(target_rank, 0) and user_id != target:
+            return bot.reply_to(m, "<b>⌯ لا يمكنك تقييد شخص رتبته مساوية لك أو أعلى منك.</b>")
+
         sec = parse_time(text)
         until = int(time.time() + sec) if sec > 0 else 0
         try:
+            # التأكد من رتبة البوت أولاً
+            bot_member = bot.get_chat_member(chat_id, bot.get_me().id)
+            if bot_member.status != 'administrator' and bot_member.status != 'creator':
+                return bot.reply_to(m, "<b>⌯ ارفعني مشرف أولاً وأعطني صلاحية الحظر.</b>")
+                
             if "حظر" in first_word: bot.ban_chat_member(chat_id, target, until_date=until)
             else: bot.restrict_chat_member(chat_id, target, until_date=until, can_send_messages=False)
             
             time_str = f" لمدة {sec//60} دقيقة" if sec > 0 else " بشكل دائم"
             bot.reply_to(m, f"<b>⌯ تم {first_word} المستخدم {time_str}.</b>")
-        except: bot.reply_to(m, "⌯ لا املك صلاحية كافية.")
+        except Exception as e: 
+            bot.reply_to(m, f"<b>⌯ فشل الإجراء:</b> تأكد أن المستخدم ليس مشرفاً رسمياً أو أن رتبتي أعلى منه.")
 
     # --- [ ميزة رفع القيود ] ---
-    if text.startswith("رفع القيود") and rank != "عضو":
+    if text.startswith("رفع القيود") and rank not in ["عضو", "مميز"]:
         target = extract_user(m)
         if not target: return bot.reply_to(m, "⌯ ايدي/معرف/بالرد.")
         try:
@@ -194,7 +223,10 @@ def handle_all(m):
             conn.commit()
             return bot.reply_to(m, "<b>⌯ تم فتح جميع الوسائط والروابط والدردشة بنجاح.</b>")
 
-    if text.startswith(("قفل ", "فتح ")) and rank != "عضو":
+    if text.startswith(("قفل ", "فتح ")) and rank not in ["عضو"]:
+        # المميز لا يتأثر بأوامر القفل والفتح لكنه لا يملك صلاحية تنفيذها إلا على الدردشة حسب الطلب
+        if rank == "مميز" and "الدردشه" not in text: return 
+        
         parts = text.split()
         if len(parts) > 1:
             item_name = parts[1]
@@ -222,17 +254,18 @@ def handle_all(m):
         conn.commit()
         return bot.reply_to(m, f"<b>⌯ تم مسح الرد ({trigger_to_del}) بنجاح.</b>")
 
-    # --- [ نظام الكشف (جديد) 🔥 ] ---
+    # --- [ نظام الكشف المطور 🔥 ] ---
     if text.startswith("كشف") and len(text.split()) <= 2 and text != "كشف المجموعه":
         target_id = extract_user(m)
         if not target_id: return bot.reply_to(m, "<b>⌯ ايدي/معرف/بالرد.</b>")
         try:
             u_info = bot.get_chat(target_id)
-            name = u_info.first_name + (f" {u_info.last_name}" if u_info.last_name else "")
+            name = (u_info.first_name or "") + (f" {u_info.last_name}" if u_info.last_name else "")
             user_n = f"@{u_info.username}" if u_info.username else "لا يوجد"
-            bio = u_info.bio if u_info.bio else "لا يوجد"
+            # جلب البايو يتطلب صلاحيات معينة في بعض نسخ المكتبة
+            bio = u_info.bio if hasattr(u_info, 'bio') and u_info.bio else "لا يوجد"
         except:
-            name, user_n, bio = "مستخدم غادر/غير معروف", "غير معروف", "غير معروف"
+            name, user_n, bio = "مستخدم غير معروف", "غير معروف", "غير معروف"
         
         t_rank = get_rank(chat_id, target_id)
         cursor.execute("SELECT msgs FROM stats WHERE chat_id=? AND user_id=?", (chat_id, target_id))
@@ -269,7 +302,7 @@ def handle_all(m):
         user_states[user_id] = {'type': 'change_cmd', 'step': 1}
         return bot.reply_to(m, "<b>⌯ ارسل الكلمة الاصلية (مثلا: حظر):\n(للالغاء ارسل 'الغاء')</b>")
 
-    if text == "اضف رد" and rank != "عضو":
+    if text == "اضف رد" and rank not in ["عضو"]:
         user_states[user_id] = {'type': 'add_resp', 'step': 1}
         return bot.reply_to(m, "<b>⌯ ارسل الكلمة التي تريد الرد عليها:\n(للالغاء ارسل 'الغاء')</b>")
 
@@ -289,9 +322,12 @@ def handle_all(m):
             return bot.reply_to(m, f"<b>⌯ رتبته هي: {target_rank}</b>")
 
     # --- [ نظام الحماية (Locks) ] ---
+    # المميز لا تسري عليه القيود (باستثناء قفل الدردشة)
     if rank == "عضو":
         cursor.execute("SELECT item FROM locks WHERE chat_id=?", (chat_id,))
         current_locks = [r[0] for r in cursor.fetchall()]
+        
+        # حماية التوحيد
         if m.content_type in ['photo', 'animation', 'sticker'] and m.content_type in current_locks:
             full_name = (m.from_user.first_name or "") + (m.from_user.last_name or "")
             if "UI" not in full_name:
@@ -300,13 +336,21 @@ def handle_all(m):
                     msg_text = f"<b>المستخدم {m.from_user.first_name}\nيـرجـى وضـع الـتـوحـيـد الـخـاص بـالاتـحـاد الـعـربـي ᴜɪ</b>"
                     return bot.send_message(chat_id, msg_text)
                 except: pass
+        
+        # تنفيذ الأقفال العامة
         if m.content_type in current_locks:
-            bot.delete_message(chat_id, m.message_id); return
+            try: bot.delete_message(chat_id, m.message_id); return
+            except: pass
         if "links" in current_locks and re.search(r't\.me/|http', raw_text):
-            bot.delete_message(chat_id, m.message_id); return
+            try: bot.delete_message(chat_id, m.message_id); return
+            except: pass
     
-    if "chat" in [r[0] for r in cursor.execute("SELECT item FROM locks WHERE chat_id=?", (chat_id,)).fetchall()] and rank not in ["مطور", "مالك اساسي"]:
-        bot.delete_message(chat_id, m.message_id); return
+    # قفل الدردشة يسري على العضو والمميز
+    if rank in ["عضو", "مميز"]:
+        cursor.execute("SELECT item FROM locks WHERE chat_id=? AND item='chat'", (chat_id,))
+        if cursor.fetchone():
+            try: bot.delete_message(chat_id, m.message_id); return
+            except: pass
 
     # --- [ تشغيل الردود ] ---
     cursor.execute("SELECT reply_data, type, caption FROM responses WHERE chat_id=? AND trigger=?", (chat_id, raw_text))
