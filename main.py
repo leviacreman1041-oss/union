@@ -6,123 +6,169 @@ import re
 # --- [ الإعدادات ] ---
 TOKEN = "8509756465:AAHWRF5n_sAcWsmo14hfvKwoUPltb5C6kHo"
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-DEV_USERNAME = "levil_8" 
+DEV_ID = 1358013723  # ايديك يسطا
 
 # --- [ قاعدة البيانات ] ---
-def get_db():
-    conn = sqlite3.connect("bot_system.db", check_same_thread=False)
-    return conn
-
-conn = get_db()
+conn = sqlite3.connect("bot_pro.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("CREATE TABLE IF NOT EXISTS ranks (chat_id TEXT, user_id INTEGER, rank TEXT)")
-cursor.execute("CREATE TABLE IF NOT EXISTS responses (chat_id TEXT, trigger TEXT, reply_data TEXT, type TEXT, caption TEXT)")
-cursor.execute("CREATE TABLE IF NOT EXISTS user_cache (user_id INTEGER PRIMARY KEY, username TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS locks (chat_id TEXT, item TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS cache (user_id INTEGER PRIMARY KEY, username TEXT, name TEXT)")
 conn.commit()
 
-# قاموس لتخزين الحالات
-user_steps = {}
+# --- [ ميزان القوى (الرتب) ] ---
+RANK_POWER = {
+    "مطور": 100,
+    "مالك اساسي": 90,
+    "مالك": 80,
+    "مدير": 70,
+    "ادمن": 60,
+    "مميز": 50,
+    "عضو": 10
+}
 
-# --- [ الدوال المساعدة ] ---
 def get_rank(chat_id, user_id):
-    if user_id in [1358013723, 8147516847]: return "مطور"
+    if user_id == DEV_ID: return "مطور"
     try:
         member = bot.get_chat_member(chat_id, user_id)
-        if member.user.username == DEV_USERNAME: return "مطور"
         if member.status == 'creator': return "مالك اساسي"
     except: pass
-    
-    cursor.execute("SELECT rank FROM ranks WHERE chat_id = ? AND user_id = ?", (str(chat_id), user_id))
+    cursor.execute("SELECT rank FROM ranks WHERE chat_id=? AND user_id=?", (str(chat_id), user_id))
     res = cursor.fetchone()
     return res[0] if res else "عضو"
 
-# --- [ معالج إضافة رد ] ---
-@bot.message_handler(func=lambda m: m.from_user.id in user_steps)
-def handle_steps(m):
-    uid = m.from_user.id
-    chat_id = str(m.chat.id)
-    step = user_steps[uid].get('step')
+def extract_user_data(m):
+    target_id, duration = None, 0
     text = m.text or m.caption or ""
-
-    if text == "الغاء":
-        del user_steps[uid]
-        return bot.reply_to(m, "<b>⌯ تم إلغاء العملية.</b>")
-
-    if step == 1:
-        user_steps[uid]['trigger'] = text
-        user_steps[uid]['step'] = 2
-        bot.reply_to(m, f"<b>⌯ تمام، أرسل الآن الرد (نص، صورة، ملصق، إلخ) لـ: {text}</b>")
     
-    elif step == 2:
-        trigger = user_steps[uid]['trigger']
-        content_type = m.content_type
-        
-        # جلب ملف الميديا
-        file_id = m.text if content_type == 'text' else None
-        if not file_id:
-            if content_type == 'photo': file_id = m.photo[-1].file_id
-            else: file_id = getattr(m, content_type).file_id
-        
-        cursor.execute("INSERT OR REPLACE INTO responses VALUES (?, ?, ?, ?, ?)", 
-                       (chat_id, trigger, file_id, content_type, m.caption))
-        conn.commit()
-        del user_steps[uid]
-        bot.reply_to(m, f"<b>⌯ تم حفظ الرد على ({trigger}) بنجاح!</b>")
+    if m.reply_to_message:
+        target_id = m.reply_to_message.from_user.id
+    else:
+        match = re.search(r'@(\w+)|(\d{7,})', text)
+        if match:
+            if match.group(1): # يوزر
+                un = match.group(1).lower()
+                cursor.execute("SELECT user_id FROM cache WHERE username=?", (un,))
+                res = cursor.fetchone()
+                if res: target_id = res[0]
+                else:
+                    try: target_id = bot.get_chat(f"@{un}").id
+                    except: pass
+            else: target_id = int(match.group(2)) # ايدي
+
+    # استخراج وقت التقييد (مثال: كتم @user 10 دقائق)
+    time_match = re.search(r'(\d+)\s*(دقيق|ساع|يوم)', text)
+    if time_match:
+        val, unit = int(time_match.group(1)), time_match.group(2)
+        if 'دقيق' in unit: duration = val * 60
+        elif 'ساع' in unit: duration = val * 3600
+        elif 'يوم' in unit: duration = val * 86400
+    return target_id, duration
 
 # --- [ المعالج الرئيسي ] ---
-@bot.message_handler(content_types=['text', 'photo', 'sticker', 'video', 'animation', 'voice', 'document'])
-def main(m):
+@bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'sticker', 'video', 'animation'])
+def handle_all(m):
     if m.chat.type == "private": return
-    chat_id = str(m.chat.id)
-    user_id = m.from_user.id
+    chat_id, user_id = str(m.chat.id), m.from_user.id
     text = (m.text or m.caption or "").strip()
-    rank = get_rank(chat_id, user_id)
-
-    # حفظ اليوزر
+    
+    # حفظ بيانات المستخدم في الكاش عشان اليوزر يشتغل
     if m.from_user.username:
-        cursor.execute("INSERT OR REPLACE INTO user_cache VALUES (?, ?)", (user_id, m.from_user.username.lower()))
+        cursor.execute("INSERT OR REPLACE INTO cache VALUES (?, ?, ?)", 
+                       (user_id, m.from_user.username.lower(), m.from_user.first_name))
         conn.commit()
 
-    # --- 1. أوامر الرفع والتنزيل (بالرد) ---
-    if text.startswith(("رفع ", "تنزيل ")) and m.reply_to_message:
-        if rank not in ["مطور", "مالك اساسي", "مالك", "مدير"]: return
-        target_id = m.reply_to_message.from_user.id
-        valid_ranks = ["مدير", "ادمن", "مميز", "مالك", "مالك اساسي"]
+    rank = get_rank(chat_id, user_id)
+    power = RANK_POWER.get(rank, 10)
+
+    # 1. أوامر الحماية (مدير فما فوق)
+    if any(text.startswith(x) for x in ["حظر", "كتم", "تقييد", "طرد"]):
+        if power < 70: return
+        target, sec = extract_user_data(m)
+        if not target: return bot.reply_to(m, "<b>⌯ منشن المستخدم أو اكتب يوزره ووقت التقييد.</b>")
         
-        selected_rank = next((r for r in valid_ranks if r in text), None)
-        if selected_rank:
-            if text.startswith("رفع"):
-                cursor.execute("INSERT OR REPLACE INTO ranks VALUES (?, ?, ?)", (chat_id, target_id, selected_rank))
-                bot.reply_to(m, f"<b>⌯ تم رفع الشخص {selected_rank}</b>")
-            else:
-                cursor.execute("DELETE FROM ranks WHERE chat_id=? AND user_id=? AND rank=?", (chat_id, target_id, selected_rank))
-                bot.reply_to(m, f"<b>⌯ تم تنزيل الشخص من {selected_rank}</b>")
-            conn.commit()
-            return
+        if RANK_POWER.get(get_rank(chat_id, target), 10) >= power:
+            return bot.reply_to(m, "<b>⌯ لا يمكنك تنفيذ هذا الأمر على رتبة مساوية لك أو أعلى منك.</b>")
 
-    # --- 2. أمر إضافة رد ---
-    if text == "اضف رد":
-        if rank == "عضو": return
-        user_steps[user_id] = {'step': 1}
-        return bot.reply_to(m, "<b>⌯ أرسل الآن الكلمة التي تريد الرد عليها:</b>")
-
-    # --- 3. أوامر المعلومات ---
-    if text == "رتبتي":
-        return bot.reply_to(m, f"<b>⌯ رتبتك هي: {rank}</b>")
-
-    if text == "رتبته" and m.reply_to_message:
-        t_rank = get_rank(chat_id, m.reply_to_message.from_user.id)
-        return bot.reply_to(m, f"<b>⌯ رتبته هي: {t_rank}</b>")
-
-    # --- 4. تشغيل الردود ---
-    cursor.execute("SELECT reply_data, type, caption FROM responses WHERE chat_id = ? AND trigger = ?", (chat_id, text))
-    res = cursor.fetchone()
-    if res:
+        until = int(time.time() + sec) if sec > 0 else 0
         try:
-            r_val, r_type, r_cap = res[0], res[1], res[2]
-            if r_type == 'text': bot.reply_to(m, r_val)
-            else: getattr(bot, f"send_{r_type}")(chat_id, r_val, caption=r_cap, reply_to_message_id=m.message_id)
+            if "حظر" in text: bot.ban_chat_member(chat_id, target, until_date=until)
+            elif "طرد" in text: bot.kick_chat_member(chat_id, target); bot.unban_chat_member(chat_id, target)
+            else: bot.restrict_chat_member(chat_id, target, until_date=until, can_send_messages=False)
+            bot.reply_to(m, "<b>⌯ تم تنفيذ الأمر بنجاح.</b>")
         except: pass
 
-print("🚀 البوت شغال يا ليفاي.. جرب الرفع بالرد دلوقتي!")
+    # 2. أوامر الرفع والتنزيل
+    if text.startswith(("رفع ", "تنزيل ")):
+        if power < 70: return
+        target, _ = extract_user_data(m)
+        if not target: return
+        
+        valid_ranks = ["مدير", "ادمن", "مميز", "مالك", "مالك اساسي"]
+        r_name = next((r for r in valid_ranks if r in text), None)
+        
+        if r_name:
+            if RANK_POWER.get(r_name, 10) >= power and rank != "مطور":
+                return bot.reply_to(m, "<b>⌯ لا يمكنك رفع شخص لرتبة أعلى منك أو مساوية لك.</b>")
+            
+            if text.startswith("رفع"):
+                cursor.execute("INSERT OR REPLACE INTO ranks VALUES (?, ?, ?)", (chat_id, target, r_name))
+            else:
+                cursor.execute("DELETE FROM ranks WHERE chat_id=? AND user_id=? AND rank=?", (chat_id, target, r_name))
+            conn.commit()
+            bot.reply_to(m, "<b>⌯ تم التحديث بنجاح.</b>")
+
+    # 3. تنزيل الكل (مطور ومالك اساسي فقط)
+    if text == "تنزيل الكل" and power >= 90:
+        cursor.execute("DELETE FROM ranks WHERE chat_id=?", (chat_id,))
+        conn.commit()
+        return bot.reply_to(m, "<b>⌯ تم مسح جميع الرتب.</b>")
+
+    # 4. أوامر الكشف
+    if text == "رتبتي": return bot.reply_to(m, f"<b>⌯ رتبتك هي: {rank}</b>")
+    
+    if text.startswith(("رتبته", "كشف")):
+        target, _ = extract_user_data(m)
+        if target:
+            t_rank = get_rank(chat_id, target)
+            return bot.reply_to(m, f"<b>🆔 الايدي: {target}\n🎖 الرتبة: {t_rank}</b>")
+
+    if text == "كشف المجموعه" and power >= 70:
+        msg = "<b>⌯ قائمة الرتب:</b>\n"
+        for r in ["مالك اساسي", "مالك", "مدير", "ادمن", "مميز"]:
+            cursor.execute("SELECT user_id FROM ranks WHERE chat_id=? AND rank=?", (chat_id, r))
+            rows = cursor.fetchall()
+            if rows:
+                msg += f"\n━━ <b>{r}</b> ━━\n"
+                for row in rows:
+                    cursor.execute("SELECT username FROM cache WHERE user_id=?", (row[0],))
+                    u = cursor.fetchone()
+                    msg += f"— @{u[0] if u else row[0]}\n"
+        return bot.reply_to(m, msg)
+
+    # 5. الفتح والقفل (مدير فما فوق)
+    locks = {"الصور": "photo", "الروابط": "links", "الفيديو": "video", "الملصقات": "sticker"}
+    if text == "قفل الكل" and power >= 70:
+        for v in locks.values(): cursor.execute("INSERT OR IGNORE INTO locks VALUES (?, ?)", (chat_id, v))
+        conn.commit(); return bot.reply_to(m, "<b>⌯ تم قفل جميع الوسائط.</b>")
+
+    if text == "فتح الكل" and power >= 70:
+        cursor.execute("DELETE FROM locks WHERE chat_id=?", (chat_id,))
+        conn.commit(); return bot.reply_to(m, "<b>⌯ تم فتح جميع الوسائط.</b>")
+
+    if text.startswith(("قفل ", "فتح ")) and power >= 70:
+        item = text.split(" ", 1)[1] if len(text.split()) > 1 else ""
+        if item in locks:
+            if "قفل" in text: cursor.execute("INSERT OR IGNORE INTO locks VALUES (?, ?)", (chat_id, locks[item]))
+            else: cursor.execute("DELETE FROM locks WHERE chat_id=? AND item=?", (chat_id, locks[item]))
+            conn.commit(); bot.reply_to(m, f"<b>⌯ تم {text[:3]} {item}.</b>")
+
+    # نظام الحماية (تطبيق الأقفال)
+    if power < 60:
+        cursor.execute("SELECT item FROM locks WHERE chat_id=?", (chat_id,))
+        active_locks = [r[0] for r in cursor.fetchall()]
+        if m.content_type in active_locks or ("links" in active_locks and ("t.me" in text or "http" in text)):
+            try: bot.delete_message(chat_id, m.message_id)
+            except: pass
+
 bot.infinity_polling(skip_pending=True)
