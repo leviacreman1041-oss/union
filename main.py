@@ -6,7 +6,7 @@ import re
 # --- [ الإعدادات ] ---
 TOKEN = "8509756465:AAHWRF5n_sAcWsmo14hfvKwoUPltb5C6kHo"
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-DEV_ID = 1358013723  # ايديك يسطا
+DEV_ID = 8147516847  # ايديك يسطا
 
 # --- [ قاعدة البيانات ] ---
 conn = sqlite3.connect("bot_pro.db", check_same_thread=False)
