@@ -76,7 +76,6 @@ def parse_time(text):
     elif 'يوم' in unit or 'أيام' in unit or 'ايام' in unit: delta = timedelta(days=val)
     elif 'اسبوع' in unit: delta = timedelta(weeks=val)
     elif 'شهر' in unit: delta = timedelta(days=val*30)
-    # استخدام timezone.utc يمنع مشكلة "المؤبد" لأن التليجرام يحتاج وقت UTC
     return datetime.now(timezone.utc) + delta if delta else None
 
 # ------------------- [ 1. المحرك الرئيسي ] -------------------
@@ -91,14 +90,12 @@ async def main_watcher(e):
         rank_name, rank_score = await get_rank(cid, uid, getattr(sender, 'username', None))
         text = e.text or ""
 
-        # الأوامر المستعارة
         first_word = text.split()[0] if text else ""
         cr.execute('SELECT action FROM aliases WHERE cid=? AND command=?', (cid, first_word))
         alias = cr.fetchone()
         if alias:
             text = text.replace(first_word, alias[0], 1)
 
-        # نظام الفلوود
         if rank_score < 20:
             now = time.time()
             if uid not in flood_cache: flood_cache[uid] = []
@@ -112,7 +109,6 @@ async def main_watcher(e):
                     await e.reply("⚠️ **تم تقييدك تلقائياً** بسبب التكرار.")
                 except: pass
 
-        # نظام الأقفال
         if rank_score < 10:
             cr.execute('SELECT type FROM locks WHERE cid=?', (cid,))
             locks = [row[0] for row in cr.fetchall()]
@@ -130,7 +126,6 @@ async def main_watcher(e):
                 await e.delete()
                 return
 
-        # الردود (إرسال الرد كرسالة جديدة وليس تحويل)
         cr.execute('SELECT reply_id FROM replies WHERE cid=? AND trigger=?', (cid, text))
         rep = cr.fetchone()
         if rep:
@@ -153,7 +148,6 @@ async def admin_commands(e):
         uid = sender.id
         rank_name, rank_score = await get_rank(cid, uid, getattr(sender, 'username', None))
 
-        # --- أوامر المعلومات ---
         if text == "ايدي":
             await e.reply(f"👤 **معلوماتك:**\n🆔 الايدي: `{uid}`\n🎖 الرتبة: {rank_name}")
             return
@@ -169,32 +163,48 @@ async def admin_commands(e):
             await e.reply(f"🕵️‍♂️ **البطاقة:**\n👤 الاسم: {t_ent.first_name}\n🆔 الايدي: `{t_id}`\n🎖 الرتبة: {t_rank}")
             return
 
-        # --- الرفع والتنزيل ---
         if text.startswith(("رفع", "تنزيل")) and "الكل" not in text:
-            if rank_score < 40: return
+            if rank_score < 20: return 
             target_id, target_entity = await resolve_user(e)
-            if not target_id: return await e.reply("⚠️ حدد العضو.")
-            _, t_curr_score = await get_rank(cid, target_id)
-            if t_curr_score >= rank_score and rank_name != "مطور":
-                return await e.reply("❌ لا يمكنك التحكم برتبة أعلى منك.")
+            if not target_id: return await e.reply("⚠️ حدد العضو بالرد أو المنشن.")
             parts = text.split()
-            role = parts[1] if "رفع" in text else "عضو"
-            cr.execute('INSERT OR REPLACE INTO users VALUES (?, ?, ?)', (cid, target_id, role))
-            db.commit()
-            await e.reply(f"✅ تم تنفيذ الأمر: العضو أصبح **{role}**")
+            if len(parts) < 2: return
+            if text.startswith("رفع"):
+                role = parts[1]
+                if role not in ranks_power:
+                    return await e.reply(f"⚠️ الرتبة **{role}** غير موجودة.")
+                requested_role_power = ranks_power.get(role, 0)
+                _, target_current_power = await get_rank(cid, target_id)
+                if rank_name != "مطور" and target_current_power >= rank_score:
+                    return await e.reply("❌ لا يمكنك تغيير رتبة شخص رتبته أعلى منك أو مساوية لك.")
+                if rank_name != "مطور" and requested_role_power >= rank_score:
+                    return await e.reply(f"❌ لا يمكنك رفع عضو لرتبة أعلى من رتبتك.")
+                cr.execute('INSERT OR REPLACE INTO users VALUES (?, ?, ?)', (cid, target_id, role))
+                db.commit()
+                await e.reply(f"✅ تم تنفيذ الأمر: أصبح العضو **{role}**")
+            elif text.startswith("تنزيل"):
+                _, target_current_power = await get_rank(cid, target_id)
+                if rank_name != "مطور" and target_current_power >= rank_score:
+                    return await e.reply("❌ لا يمكنك تنزيل شخص رتبته أعلى منك.")
+                cr.execute('INSERT OR REPLACE INTO users VALUES (?, ?, ?)', (cid, target_id, "عضو"))
+                db.commit()
+                await e.reply(f"✅ تم تنزيل العضو إلى رتبة **عضو**")
             return
 
-        # --- العقوبات (حظر، كتم، تقييد) ---
         if text.startswith(("حظر", "طرد", "كتم", "تقييد", "الغاء", "رفع القيود")):
-            if rank_score < 20: return
+            # تعديل الصلاحية لـ "رفع القيود" لتكون من مدير (30) فأعلى
+            if text.startswith(("الغاء", "رفع القيود")):
+                if rank_score < 30: return
+            else:
+                if rank_score < 20: return
+
             t_id, t_ent = await resolve_user(e)
             if not t_id: return await e.reply("⚠️ يرجى الرد على الشخص أو منشنته.")
             _, t_score = await get_rank(cid, t_id)
-            if t_score >= rank_score: return await e.reply("❌ العضو محمي برتبته.")
+            if t_score >= rank_score and not text.startswith(("الغاء", "رفع القيود")): 
+                return await e.reply("❌ العضو محمي برتبته.")
 
             until = parse_time(text)
-            
-            # حل مشكلة الـ SyntaxError بسحب النص خارج الـ f-string
             time_match = re.search(r'(\d+)\s*\w+', text)
             time_text = time_match.group(0) if time_match else ""
             t_str = f"لمدة {time_text}" if until else "مؤبد"
@@ -213,13 +223,12 @@ async def admin_commands(e):
                     await client.edit_permissions(cid, t_id, send_messages=False, until_date=until)
                     await e.reply(f"⛓ تم **تقييد** العضو بالكامل {t_str}")
                 elif text.startswith(("الغاء", "رفع القيود")):
-                    await client.edit_permissions(cid, t_id, send_messages=True, send_media=True, send_stickers=True, send_gifs=True)
-                    await e.reply("✅ تم **رفع القيود** عن العضو.")
+                    await client.edit_permissions(cid, t_id, send_messages=True, send_media=True, send_stickers=True, send_gifs=True, embed_links=True)
+                    await e.reply("✅ تم **رفع القيود** عن العضو بنجاح.")
             except Exception as ex:
                 await e.reply(f"❌ خطأ: {ex}")
             return
 
-        # --- الأقفال ---
         if text.startswith(("قفل", "فتح")):
             if rank_score < 30: return
             parts = text.split()
@@ -235,7 +244,6 @@ async def admin_commands(e):
             db.commit()
             return
 
-        # --- الردود التفاعلية ---
         if text == "اضف رد":
             if rank_score < 30: return
             async with client.conversation(cid, timeout=60) as conv:
@@ -249,7 +257,6 @@ async def admin_commands(e):
                 await conv.send_message(f"✅ تم حفظ الرد لـ ({word})")
             return
 
-        # --- الأوامر التفاعلية ---
         if text == "اضف امر":
             if rank_score < 40: return
             async with client.conversation(cid, timeout=60) as conv:
@@ -266,6 +273,9 @@ async def admin_commands(e):
             if rank_score < 50: return
             target_id, _ = await resolve_user(e)
             if target_id:
+                _, t_power = await get_rank(cid, target_id)
+                if rank_name != "مطور" and t_power >= rank_score:
+                    return await e.reply("❌ لا يمكنك تنزيل شخص رتبته أعلى منك.")
                 cr.execute('DELETE FROM users WHERE cid=? AND uid=?', (cid, target_id))
                 await e.reply("✅ تم تنزيل العضو من كافة الرتب.")
             else:
