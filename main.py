@@ -1,8 +1,7 @@
 import telebot
 import sqlite3
-from gtts import gTTS
 import os
-import time
+from gtts import gTTS
 
 # --- [ الإعدادات ] ---
 TOKEN = "8509756465:AAHWRF5n_sAcWsmo14hfvKwoUPltb5C6kHo"
@@ -13,7 +12,7 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 conn = sqlite3.connect("bot_system.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# إنشاء الجداول
+# إنشاء الجداول لو مش موجودة
 cursor.execute("""CREATE TABLE IF NOT EXISTS ranks (
     chat_id TEXT, user_id INTEGER, rank TEXT
 )""")
@@ -92,7 +91,7 @@ def main_handler(m):
     text = m.text if m.text else m.caption if m.caption else ""
     rank = get_rank(chat_id, user_id)
 
-    # تحديث الرسائل
+    # تحديث الإحصائيات
     cursor.execute("INSERT OR IGNORE INTO stats (chat_id, user_id, msgs) VALUES (?, ?, 0)", (chat_id, user_id))
     cursor.execute("UPDATE stats SET msgs = msgs + 1 WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
     conn.commit()
@@ -104,11 +103,11 @@ def main_handler(m):
         except: pass
         return
 
-    # --- [ 1. أوامر رفع وتنزيل ] ---
+    # --- [ أوامر رفع وتنزيل الرتب ] ---
     if text.startswith(("رفع ", "تنزيل ")):
-        if rank not in ["مطور", "مالك اساسي", "مالك"]: return
+        if rank not in ["مطور", "مالك اساسي", "مالك", "مدير"]: return
         target_id = extract_user(m)
-        if not target_id: return bot.reply_to(m, "⌯ من فضلك استخدم الرد أو المعرف أو الايدي.")
+        if not target_id: return bot.reply_to(m, "⌯ استخدم الرد أو المعرف أو الايدي.")
         rank_name = text.split(None, 1)[1]
         valid_ranks = ["مشرف", "مالك اساسي", "مالك", "مدير", "ادمن", "مميز"]
         if any(r in rank_name for r in valid_ranks):
@@ -122,42 +121,45 @@ def main_handler(m):
             conn.commit()
         return
 
-    # --- [ 2. أوامر الحظر والكتم والتقييد ] ---
+    # --- [ أوامر الحظر والكتم والتقييد ] ---
     ban_c = get_cmd(chat_id, "حظر")
     mute_c = get_cmd(chat_id, "كتم")
     rest_c = get_cmd(chat_id, "تقييد")
 
     if m.reply_to_message:
         t_id = m.reply_to_message.from_user.id
-        if text.startswith(ban_c) and rank not in ["عضو"]:
-            bot.ban_chat_member(chat_id, t_id)
-            bot.reply_to(m, f"⌯ تم تنفيذ الحظر بنجاح.")
-            return
-        elif text.startswith(mute_c) and rank not in ["عضو"]:
-            cursor.execute("INSERT OR IGNORE INTO muted VALUES (?, ?)", (chat_id, t_id))
-            conn.commit()
-            bot.reply_to(m, f"⌯ تم تنفيذ الكتم بنجاح.")
-            return
-        elif text.startswith(rest_c) and rank not in ["عضو"]:
-            bot.restrict_chat_member(chat_id, t_id, can_send_messages=False)
-            bot.reply_to(m, f"⌯ تم تقييده بنجاح.")
-            return
+        try:
+            if text.startswith(ban_c) and rank not in ["عضو"]:
+                bot.ban_chat_member(chat_id, t_id)
+                bot.reply_to(m, f"⌯ تم تنفيذ الحظر.")
+                return
+            elif text.startswith(mute_c) and rank not in ["عضو"]:
+                cursor.execute("INSERT OR IGNORE INTO muted VALUES (?, ?)", (chat_id, t_id))
+                conn.commit()
+                bot.reply_to(m, f"⌯ تم تنفيذ الكتم.")
+                return
+            elif text.startswith(rest_c) and rank not in ["عضو"]:
+                bot.restrict_chat_member(chat_id, t_id, can_send_messages=False)
+                bot.reply_to(m, f"⌯ تم تقييده.")
+                return
+        except:
+            bot.reply_to(m, "⌯ فشل التنفيذ: تأكد أن البوت مشرف وأن العضو ليس أدمن.")
 
-    # --- [ 3. أوامر المعلومات ] ---
+    # --- [ أوامر المعلومات ] ---
     if text in ["ايدي", "id"]:
         handle_id_command(m)
     elif text == "رتبتي":
-        bot.reply_to(m, f"⌯ رتبتك هي: {rank}")
+        bot.reply_to(m, f"⌯ رتبتك: {rank}")
 
-    # --- [ 4. أوامر الردود ] ---
+    # --- [ أوامر الردود التفاعلية ] ---
     if user_id in add_resp_state:
         if text == "الغاء":
             del add_resp_state[user_id]
-            return bot.reply_to(m, "<b>⌯ تم إلغاء إضافة الرد.</b>", parse_mode="HTML")
+            return bot.reply_to(m, "<b>⌯ تم إلغاء إضافة الرد.</b>")
         state = add_resp_state[user_id]
         if state['step'] == 1:
             add_resp_state[user_id].update({'trigger': text, 'step': 2})
-            return bot.reply_to(m, f"<b>⌯ الكلمة المفتاحية: ({text})\n⌯ الآن أرسل الرد:</b>", parse_mode="HTML")
+            return bot.reply_to(m, f"<b>⌯ الكلمة المفتاحية: ({text})\n⌯ الآن أرسل الرد:</b>")
         elif state['step'] == 2:
             trigger = state['trigger']
             f_id = text if m.content_type == 'text' else getattr(m, m.content_type)[-1].file_id
@@ -165,26 +167,26 @@ def main_handler(m):
             cursor.execute("INSERT INTO responses VALUES (?, ?, ?, ?, ?)", (chat_id, trigger, f_id, m.content_type, m.caption if m.caption else None))
             conn.commit()
             del add_resp_state[user_id]
-            return bot.reply_to(m, f"<b>⌯ تم حفظ الرد على ({trigger}) بنجاح.</b>", parse_mode="HTML")
+            return bot.reply_to(m, f"<b>⌯ تم حفظ الرد على ({trigger}) بنجاح.</b>")
 
     if text == "اضف رد" and rank not in ["عضو"]:
         add_resp_state[user_id] = {'step': 1}
-        return bot.reply_to(m, "<b>⌯ أرسل الكلمة التي تريد الرد عليها:</b>", parse_mode="HTML")
+        return bot.reply_to(m, "<b>⌯ أرسل الكلمة التي تريد الرد عليها:</b>")
     elif text.startswith("مسح رد ") and rank not in ["عضو"]:
         trigger_to_del = text.replace("مسح رد ", "").strip()
         cursor.execute("DELETE FROM responses WHERE chat_id = ? AND trigger = ?", (chat_id, trigger_to_del))
         conn.commit()
-        return bot.reply_to(m, f"<b>⌯ تم مسح الرد الخاص بكلمة ({trigger_to_del}) بنجاح.</b>", parse_mode="HTML")
+        return bot.reply_to(m, f"<b>⌯ تم مسح الرد على ({trigger_to_del}).</b>")
     elif text == "مسح الردود" and rank not in ["عضو"]:
         cursor.execute("DELETE FROM responses WHERE chat_id = ?", (chat_id,))
         conn.commit()
-        return bot.reply_to(m, "<b>⌯ تم مسح جميع الردود.</b>", parse_mode="HTML")
+        return bot.reply_to(m, "<b>⌯ تم مسح جميع الردود.</b>")
     elif text == "الردود":
         cursor.execute("SELECT trigger FROM responses WHERE chat_id = ?", (chat_id,))
         rows = cursor.fetchall()
-        if not rows: return bot.reply_to(m, "<b>⌯ لا توجد ردود مضافة.</b>", parse_mode="HTML")
+        if not rows: return bot.reply_to(m, "<b>⌯ لا توجد ردود مضافة.</b>")
         msg = "<b>⌯ قائمة الردود:</b>\n" + "\n".join([f"• {r[0]}" for r in rows])
-        bot.reply_to(m, msg, parse_mode="HTML")
+        bot.reply_to(m, msg)
 
     # تشغيل الردود
     cursor.execute("SELECT reply_data, type, caption FROM responses WHERE chat_id = ? AND trigger = ?", (chat_id, text))
@@ -202,7 +204,7 @@ def main_handler(m):
             elif r_type == 'video_note': bot.send_video_note(chat_id, r_val, reply_to_message_id=m.message_id)
         except: pass
 
-    # --- [ 5. الأقفال ] ---
+    # --- [ الأقفال ] ---
     locks_config = {"الصور": "photo", "الفيديو": "video", "الملصقات": "sticker", "المتحركات": "animation", "الفويسات": "voice", "الملفات": "document", "الروابط": "links", "الدردشه": "chat"}
     if text.startswith(("قفل ", "فتح ")) and rank not in ["عضو"]:
         is_lock = text.startswith("قفل ")
@@ -212,6 +214,6 @@ def main_handler(m):
             if is_lock: cursor.execute("INSERT OR IGNORE INTO locks VALUES (?, ?)", (chat_id, item_db))
             else: cursor.execute("DELETE FROM locks WHERE chat_id = ? AND item = ?", (chat_id, item_db))
             conn.commit()
-            bot.reply_to(m, f"<b>⌯ تم {'قفل' if is_lock else 'فتح'} {item_raw} بنجاح.</b>", parse_mode="HTML")
+            bot.reply_to(m, f"<b>⌯ تم {'قفل' if is_lock else 'فتح'} {item_raw} بنجاح.</b>")
 
 bot.infinity_polling()
