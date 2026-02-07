@@ -6,7 +6,7 @@ import re
 from telebot import types
 
 # ================== الإعدادات ==================
-TOKEN = "PUT_YOUR_TOKEN_HERE"
+TOKEN = "8486555369:AAGa6z2L1KKA-ajRdacAK21FAtzH9ZCbm4U"
 DEV_USERNAME = "levil_8"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
