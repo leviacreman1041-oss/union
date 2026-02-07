@@ -302,7 +302,7 @@ def handle_message(m):
         if check_flood(chat_id, user_id):
             return
     
-    # --- [ نظام الردود الذكية ] ---
+    # --- [ التحقق من حالة إضافة الرد أولاً ] ---
     if user_id in add_response_state:
         handle_add_response(m)
         return
@@ -320,7 +320,7 @@ def handle_message(m):
     # --- [ التحقق من الأوامر حسب الرتبة ] ---
     # الأعضاء: لا يمكنهم استخدام أي أوامر
     if user_rank == "عضو":
-        # فقط يمكنهم استخدام الردود التلقائية (سيتم التعامل معها في check_auto_responses)
+        # فقط يمكنهم استخدام الردود التلقائية
         pass
     else:
         # المميزين: يمكنهم استخدام أوامر محدودة
@@ -374,10 +374,14 @@ def handle_add_response(m):
     user_id = m.from_user.id
     chat_id = str(m.chat.id)
     
+    # إذا لم يكن في حالة إضافة رد، تخطي
+    if user_id not in add_response_state:
+        return
+    
     state = add_response_state[user_id]
     
     # إلغاء العملية
-    if m.text and m.text == "الغاء":
+    if m.text and m.text.strip() == "الغاء":
         del add_response_state[user_id]
         bot.reply_to(m, "⌯ تم إلغاء إضافة الرد.")
         return
@@ -387,75 +391,93 @@ def handle_add_response(m):
             bot.reply_to(m, "⌯ يجب إرسال كلمة نصية ككلمة مفتاحية!")
             return
         
+        trigger = m.text.strip()
+        if not trigger:
+            bot.reply_to(m, "⌯ يجب إرسال كلمة نصية صحيحة!")
+            return
+        
         add_response_state[user_id] = {
             'step': 2,
-            'trigger': m.text,
+            'trigger': trigger,
             'chat_id': chat_id
         }
-        bot.reply_to(m, f"⌯ الكلمة المفتاحية: {m.text}\n⌯ الآن أرسل الرد (نص، صورة، فيديو، ملصق، ملف...):")
+        bot.reply_to(m, f"⌯ الكلمة المفتاحية: {trigger}\n⌯ الآن أرسل الرد (نص، صورة، فيديو، ملصق، ملف...):")
     
     elif state['step'] == 2:  # انتظار الرد
         trigger = state['trigger']
         
         # تحديد نوع المحتوى
         content_type = m.content_type
-        reply_data = None
-        caption = None
-        file_id = None
+        
+        # التنسيق الجديد: تخزين النص في reply_data والملفات في file_id
+        reply_data = ""
+        caption = ""
+        file_id = ""
         
         if content_type == 'text':
             reply_data = m.text
+            caption = ""
+            file_id = ""
         elif content_type == 'photo':
-            reply_data = m.photo[-1].file_id
             file_id = m.photo[-1].file_id
-            caption = m.caption
+            caption = m.caption if m.caption else ""
+            reply_data = caption if caption else "[صورة]"
         elif content_type == 'video':
-            reply_data = m.video.file_id
             file_id = m.video.file_id
-            caption = m.caption
+            caption = m.caption if m.caption else ""
+            reply_data = caption if caption else "[فيديو]"
         elif content_type == 'sticker':
-            reply_data = m.sticker.file_id
             file_id = m.sticker.file_id
+            caption = ""
+            reply_data = "[ملصق]"
         elif content_type == 'animation':
-            reply_data = m.animation.file_id
             file_id = m.animation.file_id
-            caption = m.caption
+            caption = m.caption if m.caption else ""
+            reply_data = caption if caption else "[متحركة]"
         elif content_type == 'voice':
-            reply_data = m.voice.file_id
             file_id = m.voice.file_id
-            caption = m.caption
+            caption = m.caption if m.caption else ""
+            reply_data = caption if caption else "[صوت]"
         elif content_type == 'document':
-            reply_data = m.document.file_id
             file_id = m.document.file_id
-            caption = m.caption
+            caption = m.caption if m.caption else ""
+            reply_data = caption if caption else "[ملف]"
         elif content_type == 'audio':
-            reply_data = m.audio.file_id
             file_id = m.audio.file_id
-            caption = m.caption
+            caption = m.caption if m.caption else ""
+            reply_data = caption if caption else "[صوتي]"
         
-        if reply_data:
-            # حذف أي رد موجود لنفس الكلمة
-            cursor.execute(
-                "DELETE FROM responses WHERE chat_id = ? AND trigger = ?",
-                (chat_id, trigger)
-            )
-            
-            # إضافة الرد الجديد
-            cursor.execute(
-                "INSERT INTO responses (chat_id, trigger, reply_type, reply_data, caption, file_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, trigger, content_type, reply_data, caption, file_id)
-            )
-            conn.commit()
-            
-            # إرسال تأكيد حسب نوع المحتوى
-            if content_type == 'text':
-                bot.reply_to(m, f"⌯ تم حفظ الرد النصي على كلمة '{trigger}' بنجاح!")
-            else:
-                bot.reply_to(m, f"⌯ تم حفظ الرد ({content_type}) على كلمة '{trigger}' بنجاح!")
-                if caption:
-                    bot.reply_to(m, f"⌯ مع النص: {caption}")
+        # حذف أي رد موجود لنفس الكلمة
+        cursor.execute(
+            "DELETE FROM responses WHERE chat_id = ? AND trigger = ?",
+            (chat_id, trigger)
+        )
+        
+        # إضافة الرد الجديد
+        cursor.execute(
+            "INSERT INTO responses (chat_id, trigger, reply_type, reply_data, caption, file_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, trigger, content_type, reply_data, caption, file_id)
+        )
+        conn.commit()
+        
+        # إرسال تأكيد حسب نوع المحتوى
+        if content_type == 'text':
+            bot.reply_to(m, f"⌯ تم حفظ الرد النصي على كلمة '{trigger}' بنجاح!\nالرد: {reply_data}")
         else:
-            bot.reply_to(m, "⌯ نوع المحتوى غير مدعوم!")
+            media_type = {
+                'photo': 'صورة',
+                'video': 'فيديو',
+                'sticker': 'ملصق',
+                'animation': 'متحركة',
+                'voice': 'صوت',
+                'document': 'ملف',
+                'audio': 'صوتي'
+            }.get(content_type, content_type)
+            
+            if caption:
+                bot.reply_to(m, f"⌯ تم حفظ الرد ({media_type}) على كلمة '{trigger}' بنجاح!\nمع النص: {caption}")
+            else:
+                bot.reply_to(m, f"⌯ تم حفظ الرد ({media_type}) على كلمة '{trigger}' بنجاح!")
         
         del add_response_state[user_id]
 
@@ -1104,13 +1126,13 @@ def check_locks(m, user_rank):
     return True
 
 def check_auto_responses(m, chat_id):
-    """فحص الردود التلقائية - مصحح"""
+    """فحص الردود التلقائية - مصحح تماماً"""
     if not m.text:
         return
     
     cursor.execute(
         "SELECT reply_type, reply_data, caption, file_id FROM responses WHERE chat_id = ? AND trigger = ?",
-        (chat_id, m.text)
+        (chat_id, m.text.strip())
     )
     result = cursor.fetchone()
     
@@ -1123,48 +1145,48 @@ def check_auto_responses(m, chat_id):
             elif reply_type == 'photo':
                 bot.send_photo(
                     m.chat.id,
-                    reply_data if reply_data else file_id,
+                    file_id,
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             elif reply_type == 'video':
                 bot.send_video(
                     m.chat.id,
-                    reply_data if reply_data else file_id,
+                    file_id,
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             elif reply_type == 'sticker':
                 bot.send_sticker(
                     m.chat.id,
-                    reply_data if reply_data else file_id,
+                    file_id,
                     reply_to_message_id=m.message_id
                 )
             elif reply_type == 'animation':
                 bot.send_animation(
                     m.chat.id,
-                    reply_data if reply_data else file_id,
+                    file_id,
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             elif reply_type == 'voice':
                 bot.send_voice(
                     m.chat.id,
-                    reply_data if reply_data else file_id,
+                    file_id,
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             elif reply_type == 'document':
                 bot.send_document(
                     m.chat.id,
-                    reply_data if reply_data else file_id,
+                    file_id,
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             elif reply_type == 'audio':
                 bot.send_audio(
                     m.chat.id,
-                    reply_data if reply_data else file_id,
+                    file_id,
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
