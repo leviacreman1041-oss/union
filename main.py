@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- [ الإعدادات ] ---
-TOKEN = "8509756465:AAHWRF5n_sAcWsmo14hfvKwoUPltb5C6kHo"
+TOKEN = "8486555369:AAGa6z2L1KKA-ajRdacAK21FAtzH9ZCbm4U"
 bot = telebot.TeleBot(TOKEN)
 DEV_USERNAME = "levil_8"
 
