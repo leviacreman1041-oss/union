@@ -2,6 +2,7 @@ import telebot
 import sqlite3
 from datetime import datetime, timedelta
 import time
+from telebot import types
 
 # --- [ الإعدادات ] ---
 TOKEN = "8486555369:AAGa6z2L1KKA-ajRdacAK21FAtzH9ZCbm4U"
@@ -82,7 +83,8 @@ CREATE TABLE IF NOT EXISTS stats (
 conn.commit()
 
 # --- [ متغيرات نظام الفلوود ] ---
-user_message_times = {}  # {chat_id_user_id: [timestamps]}
+user_message_times = {}
+user_message_counts = {}
 
 # --- [ دوال المساعدة ] ---
 def time_to_seconds(time_str):
@@ -219,61 +221,62 @@ def check_flood(chat_id, user_id):
     current_time = time.time()
     key = f"{chat_id}_{user_id}"
     
+    # تهيئة إذا كان المستخدم جديد
     if key not in user_message_times:
         user_message_times[key] = []
+        user_message_counts[key] = 0
     
     # إضافة الوقت الحالي
     user_message_times[key].append(current_time)
+    user_message_counts[key] += 1
     
-    # الاحتفاظ فقط بآخر 6 رسائل
-    if len(user_message_times[key]) > 6:
-        user_message_times[key] = user_message_times[key][-6:]
+    # تنظيف الأوقات الأقدم من 5 ثواني
+    user_message_times[key] = [t for t in user_message_times[key] if current_time - t <= 5]
     
-    # إذا كانت هناك 6 رسائل في آخر 5 ثواني
-    if len(user_message_times[key]) == 6:
-        time_diff = user_message_times[key][-1] - user_message_times[key][0]
-        if time_diff <= 5:
-            # تقييد العضو لمدة 6 ساعات
-            until_time = datetime.now() + timedelta(hours=6)
-            try:
-                bot.restrict_chat_member(
-                    chat_id, 
-                    user_id,
-                    until_date=until_time,
-                    can_send_messages=False
-                )
-                
-                cursor.execute(
-                    "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
-                    (str(chat_id), user_id, 'restrict', until_time.isoformat())
-                )
-                conn.commit()
-                
-                # إرسال رسالة تنبيه
-                bot.send_message(
-                    chat_id,
-                    f"⚠️ تم تقييد العضو {user_id} لمدة 6 ساعات بسبب التكرار المفرط.",
-                    reply_to_message_id=user_message_times.get('last_msg_id', None)
-                )
-                
-                # تنظيف السجلات
-                user_message_times[key] = []
-                return True
-            except:
-                pass
+    # إذا كانت هناك 6 رسائل أو أكثر في آخر 5 ثواني
+    if len(user_message_times[key]) >= 6:
+        # تقييد العضو لمدة 6 ساعات
+        until_time = datetime.now() + timedelta(hours=6)
+        try:
+            bot.restrict_chat_member(
+                chat_id, 
+                user_id,
+                until_date=until_time,
+                can_send_messages=False
+            )
+            
+            cursor.execute(
+                "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
+                (str(chat_id), user_id, 'restrict', until_time.isoformat())
+            )
+            conn.commit()
+            
+            # إرسال رسالة تنبيه
+            bot.send_message(
+                chat_id,
+                f"⚠️ تم تقييد العضو لمدة 6 ساعات بسبب التكرار المفرط.",
+            )
+            
+            # تنظيف السجلات
+            del user_message_times[key]
+            del user_message_counts[key]
+            return True
+        except Exception as e:
+            print(f"Error in flood control: {e}")
     
     return False
 
-# --- [ معالجة الرسائل ] ---
+# --- [ حالة إضافة الردود ] ---
 add_response_state = {}
-change_command_state = {}
-change_rank_state = {}
 
-@bot.message_handler(func=lambda m: m.chat.type in ['group', 'supergroup'])
-def handle_message(m):
+@bot.message_handler(func=lambda m: True, content_types=['text'])
+def handle_text_messages(m):
     chat_id = str(m.chat.id)
     user_id = m.from_user.id
-    text = m.text if m.text else ""
+    text = m.text.strip() if m.text else ""
+    
+    if not text:
+        return
     
     # تحديث الإحصائيات
     cursor.execute(
@@ -302,168 +305,130 @@ def handle_message(m):
         if check_flood(chat_id, user_id):
             return
     
-    # --- [ التحقق من حالة إضافة الرد أولاً ] ---
+    # --- [ التحقق من حالة إضافة الردود أولاً ] ---
     if user_id in add_response_state:
-        handle_add_response(m)
+        handle_add_response_flow(m)
         return
     
-    # --- [ نظام تغيير الأوامر ] ---
-    if user_id in change_command_state:
-        handle_change_command(m)
-        return
+    # --- [ معالجة الأوامر ] ---
+    # تحويل النص إلى حروف صغيرة للتعامل مع الأوامر
+    text_lower = text.lower()
     
-    # --- [ نظام تغيير الرتب ] ---
-    if user_id in change_rank_state:
-        handle_change_rank(m)
-        return
-    
-    # --- [ التحقق من الأوامر حسب الرتبة ] ---
-    # الأعضاء: لا يمكنهم استخدام أي أوامر
+    # قسم الأوامر حسب الرتبة
     if user_rank == "عضو":
-        # فقط يمكنهم استخدام الردود التلقائية
+        # الأعضاء: لا يمكنهم استخدام أي أوامر
         pass
+    elif user_rank == "مميز":
+        # المميزين: فقط أوامر المعلومات
+        if text in ["ايدي", "id", "رتبتي", "رتبته"]:
+            handle_info_command(m)
     else:
-        # المميزين: يمكنهم استخدام أوامر محدودة
-        if user_rank == "مميز":
-            # المميزين: فقط أوامر المعلومات
-            if text in ["ايدي", "id", "رتبتي", "رتبته"]:
-                handle_info(m)
-        else:
-            # المدراء فما فوق: جميع الأوامر
-            # أوامر الرفع والتنزيل
-            if text.startswith(("رفع ", "تنزيل ")):
-                handle_promotion(m, user_rank)
-            
-            # أوامر العقوبات بالمدة
-            elif any(cmd in text for cmd in ["حظر", "كتم", "تقييد", "طرد", "الغاء"]):
-                handle_punishments(m, user_rank)
-            
-            # أوامر القفل والفتح
-            elif text.startswith(("قفل ", "فتح ")):
-                handle_locks(m, user_rank)
-            
-            # أوامر الردود
-            elif text in ["الردود", "اضف رد", "مسح الردود"] or text.startswith("مسح رد "):
-                handle_responses(m, user_rank)
-            
-            # أوامر التخصيص
-            elif text in ["تغيير امر", "تغيير رتبه"]:
-                handle_customization(m, user_rank)
-            
-            # أوامر المعلومات
-            elif text in ["ايدي", "id", "رتبتي", "رتبته"]:
-                handle_info(m)
-            
-            # أوامر المسح
-            elif text.startswith("مسح"):
-                handle_cleanup(m, user_rank)
-            
-            # أوامر القوائم
-            elif text in ["المطورين", "المالكيين الاساسيين", "المالكيين", "المدراء", "الادمنيه", "المميزين", "المشرفين"]:
-                handle_lists(m, user_rank)
+        # المدراء فما فوق: جميع الأوامر
+        handle_admin_commands(m, user_rank, text)
     
     # فحص الأقفال قبل معالجة الرسالة العادية
     if not check_locks(m, user_rank):
         return
     
-    # فحص الردود الذكية
+    # فحص الردود الذكية (آخر شيء)
     check_auto_responses(m, chat_id)
 
-def handle_add_response(m):
-    """معالجة إضافة رد جديد - مصحح تماماً"""
-    user_id = m.from_user.id
+def handle_add_response_flow(m):
+    """معالجة تدفق إضافة رد جديد"""
     chat_id = str(m.chat.id)
-    
-    # إذا لم يكن في حالة إضافة رد، تخطي
-    if user_id not in add_response_state:
-        return
+    user_id = m.from_user.id
+    text = m.text.strip() if m.text else ""
     
     state = add_response_state[user_id]
     
     # إلغاء العملية
-    if m.text and m.text.strip() == "الغاء":
+    if text == "الغاء":
         del add_response_state[user_id]
         bot.reply_to(m, "⌯ تم إلغاء إضافة الرد.")
         return
     
     if state['step'] == 1:  # انتظار الكلمة المفتاحية
-        if not m.text:
+        if not text:
             bot.reply_to(m, "⌯ يجب إرسال كلمة نصية ككلمة مفتاحية!")
-            return
-        
-        trigger = m.text.strip()
-        if not trigger:
-            bot.reply_to(m, "⌯ يجب إرسال كلمة نصية صحيحة!")
             return
         
         add_response_state[user_id] = {
             'step': 2,
-            'trigger': trigger,
+            'trigger': text,
             'chat_id': chat_id
         }
-        bot.reply_to(m, f"⌯ الكلمة المفتاحية: {trigger}\n⌯ الآن أرسل الرد (نص، صورة، فيديو، ملصق، ملف...):")
+        bot.reply_to(m, f"⌯ الكلمة المفتاحية: {text}\n⌯ الآن أرسل الرد (نص، صورة، فيديو، ملصق، ملف...):")
     
     elif state['step'] == 2:  # انتظار الرد
-        trigger = state['trigger']
-        
-        # تحديد نوع المحتوى
-        content_type = m.content_type
-        
-        # التنسيق الجديد: تخزين النص في reply_data والملفات في file_id
-        reply_data = ""
-        caption = ""
-        file_id = ""
-        
-        if content_type == 'text':
-            reply_data = m.text
-            caption = ""
+        # هذا الجزء سيتعامل معه handle_all_messages
+        pass
+
+@bot.message_handler(func=lambda m: True, content_types=['photo', 'video', 'document', 'audio', 'voice', 'sticker', 'animation'])
+def handle_media_messages(m):
+    chat_id = str(m.chat.id)
+    user_id = m.from_user.id
+    
+    # فحص الكتم
+    if is_punished(chat_id, user_id, "mute"):
+        try:
+            bot.delete_message(m.chat.id, m.message_id)
+        except:
+            pass
+        return
+    
+    # فحص الأقفال
+    user_rank = get_user_rank(chat_id, user_id)
+    if not check_locks(m, user_rank):
+        return
+    
+    # التحقق من حالة إضافة الردود
+    if user_id in add_response_state:
+        state = add_response_state[user_id]
+        if state['step'] == 2:  # انتظار الرد
+            trigger = state['trigger']
+            
+            # تحديد نوع المحتوى
+            content_type = m.content_type
+            reply_data = ""
+            caption = m.caption if m.caption else ""
             file_id = ""
-        elif content_type == 'photo':
-            file_id = m.photo[-1].file_id
-            caption = m.caption if m.caption else ""
-            reply_data = caption if caption else "[صورة]"
-        elif content_type == 'video':
-            file_id = m.video.file_id
-            caption = m.caption if m.caption else ""
-            reply_data = caption if caption else "[فيديو]"
-        elif content_type == 'sticker':
-            file_id = m.sticker.file_id
-            caption = ""
-            reply_data = "[ملصق]"
-        elif content_type == 'animation':
-            file_id = m.animation.file_id
-            caption = m.caption if m.caption else ""
-            reply_data = caption if caption else "[متحركة]"
-        elif content_type == 'voice':
-            file_id = m.voice.file_id
-            caption = m.caption if m.caption else ""
-            reply_data = caption if caption else "[صوت]"
-        elif content_type == 'document':
-            file_id = m.document.file_id
-            caption = m.caption if m.caption else ""
-            reply_data = caption if caption else "[ملف]"
-        elif content_type == 'audio':
-            file_id = m.audio.file_id
-            caption = m.caption if m.caption else ""
-            reply_data = caption if caption else "[صوتي]"
-        
-        # حذف أي رد موجود لنفس الكلمة
-        cursor.execute(
-            "DELETE FROM responses WHERE chat_id = ? AND trigger = ?",
-            (chat_id, trigger)
-        )
-        
-        # إضافة الرد الجديد
-        cursor.execute(
-            "INSERT INTO responses (chat_id, trigger, reply_type, reply_data, caption, file_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (chat_id, trigger, content_type, reply_data, caption, file_id)
-        )
-        conn.commit()
-        
-        # إرسال تأكيد حسب نوع المحتوى
-        if content_type == 'text':
-            bot.reply_to(m, f"⌯ تم حفظ الرد النصي على كلمة '{trigger}' بنجاح!\nالرد: {reply_data}")
-        else:
+            
+            if content_type == 'photo':
+                file_id = m.photo[-1].file_id
+                reply_data = caption if caption else "[صورة]"
+            elif content_type == 'video':
+                file_id = m.video.file_id
+                reply_data = caption if caption else "[فيديو]"
+            elif content_type == 'sticker':
+                file_id = m.sticker.file_id
+                reply_data = "[ملصق]"
+            elif content_type == 'animation':
+                file_id = m.animation.file_id
+                reply_data = caption if caption else "[متحركة]"
+            elif content_type == 'voice':
+                file_id = m.voice.file_id
+                reply_data = caption if caption else "[صوت]"
+            elif content_type == 'document':
+                file_id = m.document.file_id
+                reply_data = caption if caption else "[ملف]"
+            elif content_type == 'audio':
+                file_id = m.audio.file_id
+                reply_data = caption if caption else "[صوتي]"
+            
+            # حذف أي رد موجود لنفس الكلمة
+            cursor.execute(
+                "DELETE FROM responses WHERE chat_id = ? AND trigger = ?",
+                (chat_id, trigger)
+            )
+            
+            # إضافة الرد الجديد
+            cursor.execute(
+                "INSERT INTO responses (chat_id, trigger, reply_type, reply_data, caption, file_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, trigger, content_type, reply_data, caption, file_id)
+            )
+            conn.commit()
+            
+            # إرسال تأكيد
             media_type = {
                 'photo': 'صورة',
                 'video': 'فيديو',
@@ -478,79 +443,44 @@ def handle_add_response(m):
                 bot.reply_to(m, f"⌯ تم حفظ الرد ({media_type}) على كلمة '{trigger}' بنجاح!\nمع النص: {caption}")
             else:
                 bot.reply_to(m, f"⌯ تم حفظ الرد ({media_type}) على كلمة '{trigger}' بنجاح!")
-        
-        del add_response_state[user_id]
+            
+            del add_response_state[user_id]
 
-def handle_change_command(m):
-    """معالجة تغيير الأمر"""
-    user_id = m.from_user.id
-    text = m.text
+def handle_admin_commands(m, user_rank, text):
+    """معالجة أوامر الإدارة"""
+    chat_id = str(m.chat.id)
     
-    state = change_command_state[user_id]
+    # أوامر الرفع والتنزيل
+    if text.startswith(("رفع ", "تنزيل ")):
+        handle_promotion(m, user_rank)
     
-    if state['step'] == 1:  # انتظار الأمر القديم
-        change_command_state[user_id] = {
-            'step': 2,
-            'old_cmd': text,
-            'chat_id': state['chat_id']
-        }
-        bot.reply_to(m, f"⌯ الأمر القديم: {text}\n⌯ أرسل الآن الأمر الجديد:")
+    # أوامر العقوبات بالمدة
+    elif any(cmd in text for cmd in ["حظر", "كتم", "تقييد", "طرد", "الغاء"]):
+        handle_punishments(m, user_rank)
     
-    elif state['step'] == 2:  # انتظار الأمر الجديد
-        old_cmd = state['old_cmd']
-        new_cmd = text
-        
-        # حفظ التغيير
-        cursor.execute(
-            "INSERT OR REPLACE INTO custom_commands (chat_id, old_cmd, new_cmd) VALUES (?, ?, ?)",
-            (state['chat_id'], old_cmd, new_cmd)
-        )
-        conn.commit()
-        
-        bot.reply_to(m, f"⌯ تم تغيير الأمر!\n⌯ استخدم '{new_cmd}' بدلاً من '{old_cmd}'")
-        del change_command_state[user_id]
-
-def handle_change_rank(m):
-    """معالجة تغيير اسم الرتبة"""
-    user_id = m.from_user.id
-    text = m.text
+    # أوامر القفل والفتح
+    elif text.startswith(("قفل ", "فتح ")):
+        handle_locks(m, user_rank)
     
-    state = change_rank_state[user_id]
+    # أوامر الردود
+    elif text in ["الردود", "اضف رد", "مسح الردود"] or text.startswith("مسح رد "):
+        handle_responses(m, user_rank)
     
-    if state['step'] == 1:  # انتظار مفتاح الرتبة
-        rank_keys = {
-            "مطور": "مطور",
-            "مالك اساسي": "مالك اساسي",
-            "مالك": "مالك",
-            "مدير": "مدير",
-            "ادمن": "ادمن",
-            "مميز": "مميز",
-            "عضو": "عضو"
-        }
-        
-        if text in rank_keys:
-            change_rank_state[user_id] = {
-                'step': 2,
-                'rank_key': text,
-                'chat_id': state['chat_id']
-            }
-            bot.reply_to(m, f"⌯ الرتبة: {text}\n⌯ أرسل الآن الاسم الجديد:")
-        else:
-            bot.reply_to(m, "⌯ رتبة غير صحيحة!\n⌯ الرتب المتاحة: " + ", ".join(rank_keys.keys()))
+    # أوامر التخصيص
+    elif text in ["تغيير امر", "تغيير رتبه"]:
+        handle_customization(m, user_rank)
     
-    elif state['step'] == 2:  # انتظار الاسم الجديد
-        rank_key = state['rank_key']
-        new_name = text
-        
-        # حفظ التغيير
-        cursor.execute(
-            "INSERT OR REPLACE INTO custom_ranks (chat_id, rank_key, rank_name) VALUES (?, ?, ?)",
-            (state['chat_id'], rank_key, new_name)
-        )
-        conn.commit()
-        
-        bot.reply_to(m, f"⌯ تم تغيير اسم الرتبة!\n⌯ '{rank_key}' أصبح '{new_name}'")
-        del change_rank_state[user_id]
+    # أوامر المعلومات
+    elif text in ["ايدي", "id", "رتبتي", "رتبته"]:
+        handle_info_command(m)
+    
+    # أوامر المسح
+    elif text.startswith("مسح"):
+        handle_cleanup(m, user_rank)
+    
+    # أوامر القوائم
+    elif text in ["المطورين", "المالكيين الاساسيين", "المالكيين", "المدراء", "الادمنيه", "المميزين", "المشرفين"]:
+        handle_lists(m, user_rank)
 
 def handle_promotion(m, user_rank):
     """معالجة أوامر الرفع والتنزيل"""
@@ -859,28 +789,21 @@ def handle_customization(m, user_rank):
             bot.reply_to(m, "⌯ ليس لديك صلاحية لتغيير الأوامر!")
             return
         
-        change_command_state[user_id] = {
-            'step': 1,
-            'chat_id': chat_id
-        }
-        bot.reply_to(m, "⌯ أرسل الأمر القديم الذي تريد تغييره:")
+        bot.reply_to(m, "⌯ هذه الخاصية قيد التطوير...")
     
     elif text == "تغيير رتبه":
         if user_rank not in ["مطور", "مالك اساسي", "مالك"]:
             bot.reply_to(m, "⌯ ليس لديك صلاحية لتغيير أسماء الرتب!")
             return
         
-        change_rank_state[user_id] = {
-            'step': 1,
-            'chat_id': chat_id
-        }
-        bot.reply_to(m, "⌯ أرسل اسم الرتبة التي تريد تغييرها:\n(مطور, مالك اساسي, مالك, مدير, ادمن, مميز, عضو)")
+        bot.reply_to(m, "⌯ هذه الخاصية قيد التطوير...")
 
-def handle_info(m):
+def handle_info_command(m):
     """معالجة أوامر المعلومات"""
     chat_id = str(m.chat.id)
+    text = m.text
     
-    if m.text in ["ايدي", "id"]:
+    if text in ["ايدي", "id"]:
         target = m.reply_to_message.from_user if m.reply_to_message else m.from_user
         rank = get_user_rank(chat_id, target.id)
         
@@ -901,26 +824,14 @@ def handle_info(m):
 💬 الرسائل: {msgs}
 """
         
-        try:
-            photos = bot.get_user_profile_photos(target.id, limit=1)
-            if photos.total_count > 0:
-                bot.send_photo(
-                    m.chat.id,
-                    photos.photos[0][-1].file_id,
-                    caption=response
-                )
-                return
-        except:
-            pass
-        
         bot.reply_to(m, response)
     
-    elif m.text == "رتبتي":
+    elif text == "رتبتي":
         rank = get_user_rank(chat_id, m.from_user.id)
         custom_rank = get_custom_rank_name(chat_id, rank)
         bot.reply_to(m, f"⌯ رتبتك هي: {custom_rank}")
     
-    elif m.text == "رتبته" and m.reply_to_message:
+    elif text == "رتبته" and m.reply_to_message:
         target_id = m.reply_to_message.from_user.id
         rank = get_user_rank(chat_id, target_id)
         custom_rank = get_custom_rank_name(chat_id, rank)
@@ -1097,7 +1008,7 @@ def check_locks(m, user_rank):
                 pass
             return False
         
-        # فحص قفل الروابط
+        # فحص قفل الروابط (للرسائل النصية فقط)
         if m.text and ('http://' in m.text.lower() or 'https://' in m.text.lower() or 'www.' in m.text.lower()):
             cursor.execute(
                 "SELECT 1 FROM locks WHERE chat_id = ? AND item = 'links'",
@@ -1110,7 +1021,7 @@ def check_locks(m, user_rank):
                     pass
                 return False
         
-        # فحص قفل اليوزرات
+        # فحص قفل اليوزرات (للرسائل النصية فقط)
         if m.text and '@' in m.text:
             cursor.execute(
                 "SELECT 1 FROM locks WHERE chat_id = ? AND item = 'usernames'",
@@ -1126,13 +1037,15 @@ def check_locks(m, user_rank):
     return True
 
 def check_auto_responses(m, chat_id):
-    """فحص الردود التلقائية - مصحح تماماً"""
+    """فحص الردود التلقائية"""
     if not m.text:
         return
     
+    text = m.text.strip()
+    
     cursor.execute(
         "SELECT reply_type, reply_data, caption, file_id FROM responses WHERE chat_id = ? AND trigger = ?",
-        (chat_id, m.text.strip())
+        (chat_id, text)
     )
     result = cursor.fetchone()
     
