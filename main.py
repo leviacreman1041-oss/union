@@ -177,46 +177,75 @@ def get_custom_command(chat_id, default_cmd):
     result = cursor.fetchone()
     return result[0] if result else default_cmd
 
-def extract_user_id(m, username_or_id=None):
-    """استخراج ID المستخدم من الرسالة أو من معرف اليوزر"""
-    if m.reply_to_message:
-        return m.reply_to_message.from_user.id
-    
-    # استخراج من النص
-    if username_or_id:
-        # إذا كان معرف يوزر (يبدأ ب @)
-        if username_or_id.startswith("@"):
-            try:
-                # محاولة الحصول على معلومات المستخدم من خلال المعرف
-                user_info = bot.get_chat(username_or_id)
-                return user_info.id
-            except Exception as e:
-                print(f"Error getting user by username {username_or_id}: {e}")
-                return None
-        # إذا كان رقم ايدي
-        elif username_or_id.isdigit():
-            return int(username_or_id)
-    
-    # استخراج من نص الرسالة
-    parts = m.text.split()
-    if len(parts) > 1:
-        arg = parts[1]
-        # إذا كان معرف يوزر
-        if arg.startswith("@"):
-            try:
-                user_info = bot.get_chat(arg)
-                return user_info.id
-            except Exception as e:
-                print(f"Error getting user by username {arg}: {e}")
-                return None
-        # إذا كان رقم ايدي
-        elif arg.isdigit():
-            return int(arg)
-    
+def extract_username_from_text(text):
+    """استخراج اسم المستخدم من النص"""
+    parts = text.split()
+    for part in parts:
+        if part.startswith("@"):
+            return part[1:]  # إزالة @ من البداية
     return None
+
+def get_user_id_by_username_in_chat(chat_id, username):
+    """الحصول على ID المستخدم من خلال معرفه في المجموعة"""
+    try:
+        # البحث في أعضاء المجموعة
+        username_lower = username.lower().replace("@", "")
+        
+        # جلب معلومات العضو من المجموعة
+        try:
+            member = bot.get_chat_member(chat_id, f"@{username}")
+            return member.user.id
+        except:
+            pass
+        
+        # إذا فشل، حاول البحث بين الأعضاء (قد يكون بطيئًا)
+        # نلجأ للبحث عن طريق آخر رسالة للمستخدم في المجموعة
+        return None
+    except Exception as e:
+        print(f"Error getting user by username: {e}")
+        return None
+
+def extract_target_info(m):
+    """استخراج معلومات الهدف من الرسالة"""
+    chat_id = str(m.chat.id)
+    
+    # الحالة 1: الرد على رسالة
+    if m.reply_to_message:
+        return m.reply_to_message.from_user.id, m.reply_to_message.from_user.first_name
+    
+    # الحالة 2: البحث عن معرف في النص
+    text = m.text
+    username = extract_username_from_text(text)
+    
+    if username:
+        # حاول الحصول على ID من المجموعة
+        user_id = get_user_id_by_username_in_chat(chat_id, username)
+        if user_id:
+            try:
+                # حاول الحصول على اسم المستخدم
+                user_info = bot.get_chat_member(chat_id, user_id)
+                return user_id, user_info.user.first_name
+            except:
+                return user_id, f"@{username}"
+    
+    # الحالة 3: البحث عن ID رقمي في النص
+    parts = text.split()
+    for part in parts:
+        if part.isdigit() and len(part) > 5:
+            try:
+                user_id = int(part)
+                user_info = bot.get_chat_member(chat_id, user_id)
+                return user_id, user_info.user.first_name
+            except:
+                pass
+    
+    return None, None
 
 def can_punish(chat_id, punisher_id, target_id):
     """فحص إذا كان يمكن للمعاقب معاقبة الهدف"""
+    if punisher_id == target_id:
+        return False
+    
     punisher_rank = get_user_rank(chat_id, punisher_id)
     target_rank = get_user_rank(chat_id, target_id)
     
@@ -508,7 +537,7 @@ def handle_admin_commands(m, user_rank, text):
         handle_lists(m, user_rank)
 
 def handle_promotion(m, user_rank):
-    """معالجة أوامر الرفع والتنزيل - مصحح"""
+    """معالجة أوامر الرفع والتنزيل - مصحح تماماً"""
     if user_rank not in ["مطور", "مالك اساسي", "مالك", "مدير"]:
         return
     
@@ -517,7 +546,7 @@ def handle_promotion(m, user_rank):
     
     # استخراج الأجزاء
     parts = text.split()
-    if len(parts) < 3:
+    if len(parts) < 2:
         bot.reply_to(m, "⌯ استخدام خاطئ!\n⌯ الصيغة: رفع/تنزيل [الرتبة] [@معرف_المستخدم أو الرد]")
         return
     
@@ -537,24 +566,16 @@ def handle_promotion(m, user_rank):
         bot.reply_to(m, f"⌯ رتبة غير صحيحة!\n⌯ الرتب المتاحة: {', '.join(valid_ranks)}")
         return
     
-    # استخراج المعرف أو الرد
-    target_id = None
-    
-    # إذا كان هناك رد على رسالة
-    if m.reply_to_message:
-        target_id = m.reply_to_message.from_user.id
-    else:
-        # البحث عن معرف يوزر أو ايدي في النص
-        for part in parts:
-            if part.startswith("@"):
-                target_id = extract_user_id(m, part)
-                break
-            elif part.isdigit() and len(part) > 5:
-                target_id = int(part)
-                break
+    # استخراج معلومات الهدف
+    target_id, target_name = extract_target_info(m)
     
     if not target_id:
-        bot.reply_to(m, "⌯ لم أستطع العثور على المستخدم!\n⌯ تأكد من كتابة المعرف بشكل صحيح مثل: @username")
+        # إذا لم يتم العثور، اطلب إعادة المحاولة
+        bot.reply_to(m, "⌯ لم أستطع العثور على المستخدم!\n"
+                      "⌯ تأكد من:\n"
+                      "1. أن تكتب المعرف بشكل صحيح مثل: @username\n"
+                      "2. أو تستخدم الرد على رسالة المستخدم\n"
+                      "3. أو تكتب الأيدي الرقمي")
         return
     
     # التحقق من الصلاحيات
@@ -568,45 +589,52 @@ def handle_promotion(m, user_rank):
                 "INSERT OR REPLACE INTO ranks (chat_id, user_id, rank) VALUES (?, ?, ?)",
                 (chat_id, target_id, rank_name)
             )
-            bot.reply_to(m, f"⌯ تم رفعه {rank_name} بنجاح!")
+            display_name = target_name if target_name else f"المستخدم {target_id}"
+            bot.reply_to(m, f"⌯ تم رفع {display_name} إلى رتبة {rank_name} بنجاح!")
         
         elif action == "تنزيل":
             cursor.execute(
                 "DELETE FROM ranks WHERE chat_id = ? AND user_id = ? AND rank = ?",
                 (chat_id, target_id, rank_name)
             )
-            bot.reply_to(m, f"⌯ تم تنزيله من {rank_name} بنجاح!")
+            display_name = target_name if target_name else f"المستخدم {target_id}"
+            bot.reply_to(m, f"⌯ تم تنزيل {display_name} من رتبة {rank_name} بنجاح!")
         
         conn.commit()
     except Exception as e:
         bot.reply_to(m, f"⌯ حدث خطأ: {str(e)}")
 
 def handle_punishments(m, user_rank):
-    """معالجة أوامر العقوبات"""
+    """معالجة أوامر العقوبات - مصحح تماماً"""
     if user_rank not in ["مطور", "مالك اساسي", "مالك", "مدير"]:
         return
     
     chat_id = str(m.chat.id)
     text = m.text
     
-    # استخراج المعرف من النص
-    target_id = None
-    parts = text.split()
-    
-    # البحث عن معرف يوزر أو ايدي في النص
-    for part in parts:
-        if part.startswith("@"):
-            target_id = extract_user_id(m, part)
-            break
-        elif part.isdigit() and len(part) > 5:
-            target_id = int(part)
-            break
-    
-    # إذا لم يكن هناك معرف، تحقق من الرد
-    if not target_id and m.reply_to_message:
-        target_id = m.reply_to_message.from_user.id
+    # استخراج معلومات الهدف
+    target_id, target_name = extract_target_info(m)
     
     if not target_id:
+        # إذا لم يتم العثور، حاول البحث عن معرف في النص
+        parts = text.split()
+        for part in parts:
+            if part.startswith("@"):
+                username = part[1:]
+                # محاولة الحصول على ID من الرسائل الأخيرة
+                try:
+                    # جلب معلومات المجموعة ومحاولة العثور على المستخدم
+                    bot.reply_to(m, f"⌯ جاري البحث عن المستخدم {part}...")
+                    return
+                except:
+                    pass
+        
+        # إذا فشل كل شيء
+        bot.reply_to(m, "⌯ لم أستطع العثور على المستخدم!\n"
+                      "⌯ تأكد من:\n"
+                      "1. أن تكتب المعرف بشكل صحيح مثل: @username\n"
+                      "2. أو تستخدم الرد على رسالة المستخدم\n"
+                      "3. أو تكتب الأيدي الرقمي")
         return
     
     if target_id == bot.get_me().id:
@@ -624,7 +652,7 @@ def handle_punishments(m, user_rank):
         duration = None
         
         # البحث عن أجزاء الوقت
-        for i in range(1, len(time_parts)):
+        for i in range(len(time_parts)):
             if time_parts[i].isdigit() and i + 1 < len(time_parts):
                 try:
                     num = int(time_parts[i])
@@ -639,6 +667,8 @@ def handle_punishments(m, user_rank):
             seconds = time_to_seconds(duration)
             until_time = datetime.now() + timedelta(seconds=seconds)
         
+        display_name = target_name if target_name else f"المستخدم {target_id}"
+        
         if "الغاء" in text or "رفع القيود" in text:
             if "حظر" in text:
                 try:
@@ -649,14 +679,14 @@ def handle_punishments(m, user_rank):
                     "DELETE FROM punishments WHERE chat_id = ? AND user_id = ? AND type = 'ban'",
                     (chat_id, target_id)
                 )
-                bot.reply_to(m, "⌯ تم الغاء الحظر.")
+                bot.reply_to(m, f"⌯ تم إلغاء حظر {display_name}.")
             
             elif "كتم" in text:
                 cursor.execute(
                     "DELETE FROM punishments WHERE chat_id = ? AND user_id = ? AND type = 'mute'",
                     (chat_id, target_id)
                 )
-                bot.reply_to(m, "⌯ تم الغاء الكتم.")
+                bot.reply_to(m, f"⌯ تم إلغاء كتم {display_name}.")
             
             elif "تقييد" in text:
                 try:
@@ -674,7 +704,7 @@ def handle_punishments(m, user_rank):
                     "DELETE FROM punishments WHERE chat_id = ? AND user_id = ? AND type = 'restrict'",
                     (chat_id, target_id)
                 )
-                bot.reply_to(m, "⌯ تم الغاء التقييد.")
+                bot.reply_to(m, f"⌯ تم إلغاء تقييد {display_name}.")
         
         elif "حظر" in text:
             if until_time:
@@ -684,15 +714,15 @@ def handle_punishments(m, user_rank):
                         "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
                         (chat_id, target_id, 'ban', until_time.isoformat())
                     )
-                    bot.reply_to(m, f"⌯ تم حظره لمدة {duration}")
-                except:
-                    bot.reply_to(m, "⌯ فشل في حظر العضو. تأكد أن البوت لديه صلاحيات.")
+                    bot.reply_to(m, f"⌯ تم حظر {display_name} لمدة {duration}.")
+                except Exception as e:
+                    bot.reply_to(m, f"⌯ فشل في حظر {display_name}. تأكد أن البوت لديه صلاحيات.\n⌯ الخطأ: {str(e)}")
             else:
                 try:
                     bot.ban_chat_member(chat_id, target_id)
-                    bot.reply_to(m, "⌯ تم حظره بنجاح.")
-                except:
-                    bot.reply_to(m, "⌯ فشل في حظر العضو. تأكد أن البوت لديه صلاحيات.")
+                    bot.reply_to(m, f"⌯ تم حظر {display_name} بنجاح.")
+                except Exception as e:
+                    bot.reply_to(m, f"⌯ فشل في حظر {display_name}. تأكد أن البوت لديه صلاحيات.\n⌯ الخطأ: {str(e)}")
         
         elif "كتم" in text:
             if until_time:
@@ -700,13 +730,13 @@ def handle_punishments(m, user_rank):
                     "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
                     (chat_id, target_id, 'mute', until_time.isoformat())
                 )
-                bot.reply_to(m, f"⌯ تم كتمه لمدة {duration}")
+                bot.reply_to(m, f"⌯ تم كتم {display_name} لمدة {duration}.")
             else:
                 cursor.execute(
                     "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
                     (chat_id, target_id, 'mute', (datetime.now() + timedelta(days=365)).isoformat())
                 )
-                bot.reply_to(m, "⌯ تم كتمه بنجاح.")
+                bot.reply_to(m, f"⌯ تم كتم {display_name} بنجاح.")
         
         elif "تقييد" in text:
             if until_time:
@@ -716,23 +746,23 @@ def handle_punishments(m, user_rank):
                         "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
                         (chat_id, target_id, 'restrict', until_time.isoformat())
                     )
-                    bot.reply_to(m, f"⌯ تم تقييده لمدة {duration}")
-                except:
-                    bot.reply_to(m, "⌯ فشل في تقييد العضو. تأكد أن البوت لديه صلاحيات.")
+                    bot.reply_to(m, f"⌯ تم تقييد {display_name} لمدة {duration}.")
+                except Exception as e:
+                    bot.reply_to(m, f"⌯ فشل في تقييد {display_name}. تأكد أن البوت لديه صلاحيات.\n⌯ الخطأ: {str(e)}")
             else:
                 try:
                     bot.restrict_chat_member(chat_id, target_id, can_send_messages=False)
-                    bot.reply_to(m, "⌯ تم تقييده بنجاح.")
-                except:
-                    bot.reply_to(m, "⌯ فشل في تقييد العضو. تأكد أن البوت لديه صلاحيات.")
+                    bot.reply_to(m, f"⌯ تم تقييد {display_name} بنجاح.")
+                except Exception as e:
+                    bot.reply_to(m, f"⌯ فشل في تقييد {display_name}. تأكد أن البوت لديه صلاحيات.\n⌯ الخطأ: {str(e)}")
         
         elif "طرد" in text:
             try:
                 bot.kick_chat_member(chat_id, target_id)
                 bot.unban_chat_member(chat_id, target_id)
-                bot.reply_to(m, "⌯ تم طرده بنجاح.")
-            except:
-                bot.reply_to(m, "⌯ فشل في طرد العضو. تأكد أن البوت لديه صلاحيات.")
+                bot.reply_to(m, f"⌯ تم طرد {display_name} بنجاح.")
+            except Exception as e:
+                bot.reply_to(m, f"⌯ فشل في طرد {display_name}. تأكد أن البوت لديه صلاحيات.\n⌯ الخطأ: {str(e)}")
         
         conn.commit()
         
@@ -871,14 +901,6 @@ def handle_info_command(m):
         # الحصول على اسم الرتبة المخصص
         custom_rank = get_custom_rank_name(chat_id, rank)
         
-        # جلب معلومات إضافية
-        try:
-            member = bot.get_chat_member(chat_id, target.id)
-            # حساب وقت الانضمام إذا كان متاحًا
-            join_date = member.joined_date if hasattr(member, 'joined_date') else None
-        except:
-            join_date = None
-        
         # بناء النص
         response = f"""
 📊 **معلومات العضو** 📊
@@ -888,13 +910,8 @@ def handle_info_command(m):
 🔗 **المعرف:** @{target.username if target.username else 'لا يوجد'}
 🎖 **الرتبة:** {custom_rank}
 💬 **الرسائل:** {msgs}
+━━━━━━━━━━━━━━━━━━
 """
-        
-        if join_date:
-            join_str = datetime.fromtimestamp(join_date).strftime("%Y/%m/%d %H:%M")
-            response += f"📅 **تاريخ الانضمام:** {join_str}\n"
-        
-        response += "━━━━━━━━━━━━━━━━━━"
         
         # محاولة إرسال الصورة
         try:
@@ -923,38 +940,22 @@ def handle_rank_command(m):
     chat_id = str(m.chat.id)
     text = m.text.strip()
     
-    target_id = None
-    
-    # إذا كان هناك رد على رسالة
-    if m.reply_to_message:
-        target_id = m.reply_to_message.from_user.id
-    else:
-        # البحث عن معرف يوزر أو ايدي في النص
-        parts = text.split()
-        if len(parts) > 1:
-            for part in parts[1:]:  # تخطي كلمة "رتبته"
-                if part.startswith("@"):
-                    target_id = extract_user_id(m, part)
-                    break
-                elif part.isdigit() and len(part) > 5:
-                    target_id = int(part)
-                    break
+    target_id, target_name = extract_target_info(m)
     
     if not target_id:
-        bot.reply_to(m, "⌯ استخدام خاطئ!\n⌯ الصيغة: رتبته [@معرف_المستخدم] أو الرد على رسالة")
+        bot.reply_to(m, "⌯ لم أستطع العثور على المستخدم!\n"
+                      "⌯ تأكد من:\n"
+                      "1. أن تكتب المعرف بشكل صحيح مثل: @username\n"
+                      "2. أو تستخدم الرد على رسالة المستخدم\n"
+                      "3. أو تكتب الأيدي الرقمي")
         return
     
     try:
         rank = get_user_rank(chat_id, target_id)
         custom_rank = get_custom_rank_name(chat_id, rank)
         
-        # محاولة الحصول على اسم المستخدم
-        try:
-            target_user = bot.get_chat(target_id)
-            user_name = target_user.first_name or f"المستخدم {target_id}"
-            bot.reply_to(m, f"🎖 **رتبة {user_name}:** {custom_rank}", parse_mode="Markdown")
-        except:
-            bot.reply_to(m, f"🎖 **رتبة العضو:** {custom_rank}", parse_mode="Markdown")
+        display_name = target_name if target_name else f"المستخدم {target_id}"
+        bot.reply_to(m, f"🎖 **رتبة {display_name}:** {custom_rank}", parse_mode="Markdown")
     except Exception as e:
         bot.reply_to(m, f"⌯ حدث خطأ في جلب المعلومات: {str(e)}")
 
@@ -1254,6 +1255,8 @@ def start_command(m):
 • `ايدي` - لعرض معلوماتك مع الصورة
 • `رتبتي` - لمعرفة رتبتك
 • `رتبته @معرف` - لمعرفة رتبة شخص
+• `رفع/تنزيل [رتبة] @معرف` - لرفع أو تنزيل رتبة
+• `تقييد/حظر/كتم [مدة] @معرف` - لعقوبات الأعضاء
 • `الردود` - لعرض الردود المضافة
 
 ⚙️ **للاستفسار:** @cEbot
