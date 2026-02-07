@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS command_aliases (
 """)
 
 cursor.execute("""
+CREATE TABLE IF NOT EXISTS custom_commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT,
+    alias TEXT,
+    command TEXT,
+    UNIQUE(chat_id, alias)
+)
+""")
+
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS stats (
     chat_id TEXT,
     user_id INTEGER,
@@ -81,8 +91,8 @@ user_message_counts = {}
 # --- [ حالة إضافة الردود ] ---
 add_response_state = {}
 
-# --- [ حالة إضافة أوامر بديلة ] ---
-add_alias_state = {}
+# --- [ حالة إضافة أوامر مخصصة ] ---
+add_custom_command_state = {}
 
 # --- [ دوال المساعدة ] ---
 def time_to_seconds(time_str):
@@ -116,19 +126,14 @@ def time_to_seconds(time_str):
     
     return total_seconds if total_seconds > 0 else 3600
 
-def get_command_alias(chat_id, command):
-    """الحصول على الأمر الأصلي من البديل"""
+def get_custom_command(chat_id, command_text):
+    """الحصول على الأمر الحقيقي من الأمر المخصص"""
     cursor.execute(
-        "SELECT original_command FROM command_aliases WHERE chat_id = ? AND alias = ?",
-        (str(chat_id), command.lower())
+        "SELECT command FROM custom_commands WHERE chat_id = ? AND alias = ?",
+        (str(chat_id), command_text.lower())
     )
     result = cursor.fetchone()
-    
-    if result:
-        return result[0]
-    
-    # إذا لم يكن هناك بديل، نرجع الأمر كما هو
-    return command
+    return result[0] if result else command_text
 
 def is_punished(chat_id, user_id, punishment_type):
     """فحص إذا كان المستخدم معاقب"""
@@ -340,7 +345,7 @@ def check_flood(chat_id, user_id):
     return False
 
 # --- [ معالجة الأوامر باليوزر ] ---
-def handle_command_with_username(m, command_type):
+def handle_command_with_username(m, command_type, custom_command=False):
     """معالجة الأمر باستخدام اليوزر"""
     chat_id = str(m.chat.id)
     user_id = m.from_user.id
@@ -373,21 +378,22 @@ def handle_command_with_username(m, command_type):
         duration_text = None
         seconds = None
         
-        # البحث عن الوقت في النص
-        words = text.split()
-        for i in range(len(words)):
-            if words[i].isdigit() and i + 1 < len(words):
-                try:
-                    num = int(words[i])
-                    unit = words[i + 1]
-                    duration_text = f"{num} {unit}"
-                    seconds = time_to_seconds(duration_text)
-                    break
-                except:
-                    continue
-        
-        if not seconds and text:
-            seconds = time_to_seconds(text)
+        if not custom_command:
+            # البحث عن الوقت في النص
+            words = text.split()
+            for i in range(len(words)):
+                if words[i].isdigit() and i + 1 < len(words):
+                    try:
+                        num = int(words[i])
+                        unit = words[i + 1]
+                        duration_text = f"{num} {unit}"
+                        seconds = time_to_seconds(duration_text)
+                        break
+                    except:
+                        continue
+            
+            if not seconds and text:
+                seconds = time_to_seconds(text)
         
         until_time = None
         if seconds:
@@ -518,7 +524,7 @@ def handle_command_with_username(m, command_type):
     except Exception as e:
         bot.reply_to(m, f"⌯ حدث خطأ: {str(e)}")
 
-def handle_promotion_with_username(m):
+def handle_promotion_with_username(m, custom_command=False):
     """معالجة الرفع والتنزيل باليوزر"""
     chat_id = str(m.chat.id)
     user_id = m.from_user.id
@@ -551,118 +557,133 @@ def handle_promotion_with_username(m):
             rank_name = rank
             break
     
-    if not rank_name:
+    if not rank_name and not custom_command:
         bot.reply_to(m, f"⌯ رتبة غير صحيحة!\n⌯ الرتب المتاحة: {', '.join(valid_ranks)}")
         return
     
     try:
         display_name = target_name if target_name else f"المستخدم {target_id}"
         
-        if text.startswith("رفع"):
+        if text.startswith("رفع") or (custom_command and "رفع" in text):
+            if not rank_name:
+                rank_name = "ادمن"  # رتبة افتراضية
             cursor.execute(
                 "INSERT OR REPLACE INTO ranks (chat_id, user_id, rank) VALUES (?, ?, ?)",
                 (chat_id, target_id, rank_name)
             )
             bot.reply_to(m, f"⌯ تم رفع {display_name} إلى رتبة {rank_name} بنجاح!")
         
-        elif text.startswith("تنزيل"):
-            cursor.execute(
-                "DELETE FROM ranks WHERE chat_id = ? AND user_id = ? AND rank = ?",
-                (chat_id, target_id, rank_name)
-            )
-            bot.reply_to(m, f"⌯ تم تنزيل {display_name} من رتبة {rank_name} بنجاح!")
+        elif text.startswith("تنزيل") or (custom_command and "تنزيل" in text):
+            if not rank_name:
+                # إذا لم يتم تحديد رتبة، ننزل المستخدم من جميع الرتب
+                cursor.execute(
+                    "DELETE FROM ranks WHERE chat_id = ? AND user_id = ?",
+                    (chat_id, target_id)
+                )
+                bot.reply_to(m, f"⌯ تم تنزيل {display_name} من جميع الرتب بنجاح!")
+            else:
+                cursor.execute(
+                    "DELETE FROM ranks WHERE chat_id = ? AND user_id = ? AND rank = ?",
+                    (chat_id, target_id, rank_name)
+                )
+                bot.reply_to(m, f"⌯ تم تنزيل {display_name} من رتبة {rank_name} بنجاح!")
         
         conn.commit()
     except Exception as e:
         bot.reply_to(m, f"⌯ حدث خطأ: {str(e)}")
 
-def handle_alias_commands(m):
-    """معالجة أوامر إضافة الأوامر البديلة"""
-    chat_id = str(m.chat.id)
+def handle_custom_command_flow(m):
+    """معالجة تدفق إضافة أمر مخصص"""
     user_id = m.from_user.id
-    text = m.text.strip()
+    chat_id = str(m.chat.id)
+    text = m.text.strip() if m.text else ""
     
-    if user_id in add_alias_state:
-        state = add_alias_state[user_id]
+    if user_id in add_custom_command_state:
+        state = add_custom_command_state[user_id]
         
-        if state['step'] == 1:  # انتظار الأمر الأصلي
+        if text == "الغاء":
+            del add_custom_command_state[user_id]
+            bot.reply_to(m, "⌯ تم إلغاء إضافة الأمر المخصص.")
+            return
+        
+        if state['step'] == 1:  # انتظار الكلمة البديلة
             if not text:
-                bot.reply_to(m, "⌯ يجب إرسال الأمر الأصلي!")
+                bot.reply_to(m, "⌯ يجب إرسال الكلمة البديلة!")
                 return
             
-            add_alias_state[user_id] = {
+            add_custom_command_state[user_id] = {
                 'step': 2,
-                'original_command': text,
+                'alias': text,
                 'chat_id': chat_id
             }
-            bot.reply_to(m, f"⌯ الأمر الأصلي: {text}\n⌯ الآن أرسل الكلمة البديلة لهذا الأمر:")
+            bot.reply_to(m, f"⌯ الكلمة البديلة: {text}\n⌯ الآن أرسل الأمر الحقيقي الذي ستنفذه هذه الكلمة:\nمثال: تقييد 2 ساعة")
         
-        elif state['step'] == 2:  # انتظار البديل
-            original_cmd = state['original_command']
-            alias = text.lower()
+        elif state['step'] == 2:  # انتظار الأمر الحقيقي
+            alias = state['alias']
+            command = text
             
-            # حذف أي بديل موجود لنفس الكلمة
+            # حذف أي أمر مخصص موجود لنفس الكلمة
             cursor.execute(
-                "DELETE FROM command_aliases WHERE chat_id = ? AND alias = ?",
+                "DELETE FROM custom_commands WHERE chat_id = ? AND alias = ?",
                 (chat_id, alias)
             )
             
-            # إضافة البديل الجديد
+            # إضافة الأمر المخصص الجديد
             cursor.execute(
-                "INSERT INTO command_aliases (chat_id, original_command, alias) VALUES (?, ?, ?)",
-                (chat_id, original_cmd, alias)
+                "INSERT INTO custom_commands (chat_id, alias, command) VALUES (?, ?, ?)",
+                (chat_id, alias, command)
             )
             conn.commit()
             
-            bot.reply_to(m, f"⌯ تم إضافة البديل '{alias}' للأمر '{original_cmd}' بنجاح!")
-            del add_alias_state[user_id]
+            bot.reply_to(m, f"⌯ تم إضافة الأمر المخصص بنجاح!\n⌯ الكلمة: {alias}\n⌯ الأمر: {command}")
+            del add_custom_command_state[user_id]
         
         return
     
-    # أوامر إدارة البدائل
-    if text == "اضف امر":
+    # أوامر إدارة الأوامر المخصصة
+    if text == "تغيير امر" or text == "اضف امر":
         if get_user_rank(chat_id, user_id) not in ["مطور", "مالك اساسي", "مالك", "مدير"]:
-            bot.reply_to(m, "⌯ ليس لديك صلاحية لإضافة أوامر بديلة!")
+            bot.reply_to(m, "⌯ ليس لديك صلاحية لإضافة أوامر مخصصة!")
             return
         
-        add_alias_state[user_id] = {
+        add_custom_command_state[user_id] = {
             'step': 1,
             'chat_id': chat_id
         }
-        bot.reply_to(m, "⌯ أرسل الأمر الأصلي الذي تريد إضافة بديل له:")
+        bot.reply_to(m, "⌯ أرسل الكلمة البديلة التي تريد استخدامها:\nمثال: تقييد_ساعة")
     
     elif text.startswith("حذف امر "):
         if get_user_rank(chat_id, user_id) not in ["مطور", "مالك اساسي", "مالك", "مدير"]:
             return
         
-        alias = text.replace("حذف امر ", "").strip().lower()
+        alias = text.replace("حذف امر ", "").strip()
         cursor.execute(
-            "DELETE FROM command_aliases WHERE chat_id = ? AND alias = ?",
+            "DELETE FROM custom_commands WHERE chat_id = ? AND alias = ?",
             (chat_id, alias)
         )
         affected = cursor.rowcount
         conn.commit()
         
         if affected > 0:
-            bot.reply_to(m, f"⌯ تم حذف الأمر البديل '{alias}'")
+            bot.reply_to(m, f"⌯ تم حذف الأمر المخصص '{alias}'")
         else:
-            bot.reply_to(m, f"⌯ لا يوجد أمر بديل باسم '{alias}'")
+            bot.reply_to(m, f"⌯ لا يوجد أمر مخصص باسم '{alias}'")
     
-    elif text == "الاوامر":
+    elif text == "الاوامر المخصصة":
         cursor.execute(
-            "SELECT original_command, alias FROM command_aliases WHERE chat_id = ?",
+            "SELECT alias, command FROM custom_commands WHERE chat_id = ?",
             (chat_id,)
         )
-        aliases = cursor.fetchall()
+        commands = cursor.fetchall()
         
-        if not aliases:
-            bot.reply_to(m, "⌯ لا توجد أوامر بديلة مضافة.")
+        if not commands:
+            bot.reply_to(m, "⌯ لا توجد أوامر مخصصة مضافة.")
         else:
-            alias_list = []
-            for original, alias in aliases:
-                alias_list.append(f"• {alias} ← {original}")
+            command_list = []
+            for alias, command in commands:
+                command_list.append(f"• {alias} → {command}")
             
-            response = "⌯ الأوامر البديلة:\n" + "\n".join(alias_list)
+            response = "⌯ الأوامر المخصصة:\n" + "\n".join(command_list)
             bot.reply_to(m, response)
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
@@ -706,26 +727,119 @@ def handle_text_messages(m):
         handle_add_response_flow(m)
         return
     
-    # التحقق من حالة إضافة الأوامر البديلة
-    if user_id in add_alias_state:
-        handle_alias_commands(m)
+    # التحقق من حالة إضافة الأوامر المخصصة
+    if user_id in add_custom_command_state:
+        handle_custom_command_flow(m)
         return
     
-    # الحصول على الأمر الحقيقي من البديل
-    command = get_command_alias(chat_id, text.split()[0] if text else "")
+    # التحقق من الأوامر المخصصة
+    cursor.execute(
+        "SELECT command FROM custom_commands WHERE chat_id = ? AND alias = ?",
+        (chat_id, text.split()[0].lower())
+    )
+    custom_command = cursor.fetchone()
+    
+    if custom_command:
+        # هذا أمر مخصص، ننفذه
+        command_parts = text.split()
+        username_part = ""
+        
+        # البحث عن اليوزر في النص
+        for part in command_parts:
+            if part.startswith("@"):
+                username_part = part
+                break
+        
+        if username_part:
+            # ننفذ الأمر المخصص مع اليوزر
+            original_text = f"{custom_command[0]} {username_part} {' '.join(command_parts[1:])}"
+            m.text = original_text
+            handle_custom_command_execution(m, custom_command[0])
+            return
     
     # إذا كان الأمر يحتوي على @ فهو يستهدف مستخدم باليوزر
     if "@" in text:
         # تحديد نوع الأمر
-        if command in ["حظر", "كتم", "تقييد", "طرد", "الغاء حظر", "الغاء كتم", "الغاء تقييد"]:
-            handle_command_with_username(m, command)
-            return
-        elif command in ["رفع", "تنزيل"]:
-            handle_promotion_with_username(m)
-            return
+        command_parts = text.split()
+        if len(command_parts) >= 2:
+            base_command = command_parts[0].lower()
+            
+            # قائمة الأوامر المدعومة باليوزر
+            punish_commands = ["حظر", "كتم", "تقييد", "طرد", "الغاء", "رفع", "تنزيل"]
+            
+            for cmd in punish_commands:
+                if cmd in base_command:
+                    if cmd in ["رفع", "تنزيل"]:
+                        handle_promotion_with_username(m)
+                    else:
+                        handle_command_with_username(m, base_command)
+                    return
     
     # معالجة الأوامر الأخرى
     handle_other_commands(m, user_rank, text)
+
+def handle_custom_command_execution(m, custom_command):
+    """تنفيذ الأمر المخصص"""
+    chat_id = str(m.chat.id)
+    user_id = m.from_user.id
+    user_rank = get_user_rank(chat_id, user_id)
+    text = m.text
+    
+    if user_rank == "عضو":
+        return
+    
+    # استخراج الهدف من النص
+    target_id, target_name = extract_target_from_text(text, m.chat.id)
+    
+    if not target_id:
+        if "@" in text:
+            bot.reply_to(m, "⌯ لم أستطع العثور على المستخدم!\n⌯ تأكد من صحة اليوزر أو استخدم الرد على رسالته")
+        else:
+            bot.reply_to(m, "⌯ يجب ذكر اليوزر مع @ أو الرد على رسالة المستخدم!")
+        return
+    
+    if target_id == user_id:
+        bot.reply_to(m, "⌯ لا يمكنك فعل ذلك بنفسك!")
+        return
+    
+    if not can_punish(chat_id, user_id, target_id):
+        bot.reply_to(m, "⌯ لا يمكنك معاقبة شخص رتبته أعلى أو مساوية لرتبتك!")
+        return
+    
+    # استخراج المدة من الأمر المخصص
+    seconds = None
+    if "تقييد" in custom_command or "كتم" in custom_command or "حظر" in custom_command:
+        # البحث عن الوقت في الأمر المخصص
+        seconds = time_to_seconds(custom_command)
+    
+    # تنفيذ الأمر بناءً على نوعه
+    if "تقييد" in custom_command:
+        command_type = "تقييد"
+    elif "كتم" in custom_command:
+        command_type = "كتم"
+    elif "حظر" in custom_command:
+        command_type = "حظر"
+    elif "طرد" in custom_command:
+        command_type = "طرد"
+    elif "رفع" in custom_command:
+        handle_promotion_with_username(m, custom_command=True)
+        return
+    elif "تنزيل" in custom_command:
+        handle_promotion_with_username(m, custom_command=True)
+        return
+    elif "الغاء" in custom_command:
+        if "حظر" in custom_command:
+            command_type = "الغاء حظر"
+        elif "كتم" in custom_command:
+            command_type = "الغاء كتم"
+        elif "تقييد" in custom_command:
+            command_type = "الغاء تقييد"
+    else:
+        bot.reply_to(m, "⌯ نوع الأمر غير معروف في الأمر المخصص!")
+        return
+    
+    # تنفيذ العقوبة
+    handle_command_with_username(m, command_type, custom_command=True)
 
 def handle_add_response_flow(m):
     """معالجة تدفق إضافة رد جديد"""
@@ -1151,16 +1265,16 @@ def start_command(m):
 
 🛠 **المميزات المتاحة:**
 ✅ **نظام الإدارة والعقوبات باليوزر**
-   - تقييد @username 3 ساعات
+   - تقييد 3 ساعات @username
    - حظر @username يوم
    - كتم @username
-   - رفع @username مدير
+   - رفع مدير @username
    - تنزيل @username
 
-✅ **نظام الأوامر البديلة**
-   - اضف امر ← إضافة أمر بديل
-   - حذف امر ← حذف أمر بديل
-   - الاوامر ← عرض الأوامر البديلة
+✅ **نظام الأوامر المخصصة**
+   - تغيير امر / اضف امر ← إضافة أمر مخصص
+   - حذف امر ← حذف أمر مخصص
+   - الاوامر المخصصة ← عرض الأوامر المخصصة
 
 ✅ **نظام الردود الذكية**
    - اضف رد ← إضافة رد تلقائي
@@ -1171,11 +1285,18 @@ def start_command(m):
    - تقييد تلقائي لمدة 6 ساعات عند التكرار المفرط
 
 📋 **أمثلة على الأوامر:**
-• `تقييد 3 ساعات @username`
+• `تقييد 2 ساعة @username`
 • `حظر @username`
 • `رفع مدير @username`
 • `ايدي` (بالرد أو بدون)
 • `اضف رد` ← إضافة رد تلقائي
+• `تغيير امر` ← إضافة أمر مخصص
+
+📝 **مثال على الأمر المخصص:**
+1. اضف امر
+2. أدخل الكلمة البديلة: تقييد_ساعه
+3. أدخل الأمر الحقيقي: تقييد 1 ساعة
+4. الآن اكتب: تقييد_ساعه @username
 
 ⚙️ **للاستفسار:** @cEbot
 """
