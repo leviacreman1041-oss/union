@@ -3,9 +3,10 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import time
 
 # --- [ الإعدادات ] ---
-TOKEN = "8486555369:AAGa6z2L1KKA-ajRdacAK21FAtzH9ZCbm4U"
+TOKEN = "8509756465:AAHWRF5n_sAcWsmo14hfvKwoUPltb5C6kHo"
 bot = telebot.TeleBot(TOKEN)
 DEV_USERNAME = "levil_8"
 
@@ -48,7 +49,8 @@ CREATE TABLE IF NOT EXISTS responses (
     trigger TEXT,
     reply_type TEXT,
     reply_data TEXT,
-    caption TEXT
+    caption TEXT,
+    file_id TEXT
 )
 """)
 
@@ -212,6 +214,19 @@ def can_punish(chat_id, punisher_id, target_id):
     
     return punisher_level > target_level
 
+def get_rank_level(rank):
+    """الحصول على مستوى الرتبة"""
+    rank_hierarchy = {
+        "مطور": 10,
+        "مالك اساسي": 9,
+        "مالك": 8,
+        "مدير": 7,
+        "ادمن": 6,
+        "مميز": 5,
+        "عضو": 1
+    }
+    return rank_hierarchy.get(rank, 1)
+
 # --- [ معالجة الرسائل ] ---
 add_response_state = {}
 change_command_state = {}
@@ -306,25 +321,29 @@ def handle_message(m):
     check_auto_responses(m, chat_id)
 
 def handle_add_response(m):
-    """معالجة إضافة رد جديد"""
+    """معالجة إضافة رد جديد - مصحح"""
     user_id = m.from_user.id
     chat_id = str(m.chat.id)
-    text = m.text if m.text else ""
     
     state = add_response_state[user_id]
     
-    if text == "الغاء":
+    # إلغاء العملية
+    if m.text and m.text == "الغاء":
         del add_response_state[user_id]
         bot.reply_to(m, "⌯ تم إلغاء إضافة الرد.")
         return
     
     if state['step'] == 1:  # انتظار الكلمة المفتاحية
+        if not m.text:
+            bot.reply_to(m, "⌯ يجب إرسال كلمة نصية ككلمة مفتاحية!")
+            return
+        
         add_response_state[user_id] = {
             'step': 2,
-            'trigger': text,
+            'trigger': m.text,
             'chat_id': chat_id
         }
-        bot.reply_to(m, f"⌯ الكلمة المفتاحية: {text}\n⌯ الآن أرسل الرد (نص، صورة، فيديو، ملصق...):")
+        bot.reply_to(m, f"⌯ الكلمة المفتاحية: {m.text}\n⌯ الآن أرسل الرد (نص، صورة، فيديو، ملصق، ملف...):")
     
     elif state['step'] == 2:  # انتظار الرد
         trigger = state['trigger']
@@ -333,26 +352,40 @@ def handle_add_response(m):
         content_type = m.content_type
         reply_data = None
         caption = None
+        file_id = None
         
         if content_type == 'text':
-            reply_data = text
+            reply_data = m.text
         elif content_type == 'photo':
-            reply_data = m.photo[-1].file_id
+            reply_data = json.dumps({'photo': m.photo[-1].file_id})
+            file_id = m.photo[-1].file_id
             caption = m.caption
         elif content_type == 'video':
-            reply_data = m.video.file_id
+            reply_data = json.dumps({'video': m.video.file_id})
+            file_id = m.video.file_id
             caption = m.caption
         elif content_type == 'sticker':
-            reply_data = m.sticker.file_id
+            reply_data = json.dumps({'sticker': m.sticker.file_id})
+            file_id = m.sticker.file_id
         elif content_type == 'animation':
-            reply_data = m.animation.file_id
+            reply_data = json.dumps({'animation': m.animation.file_id})
+            file_id = m.animation.file_id
             caption = m.caption
         elif content_type == 'voice':
-            reply_data = m.voice.file_id
+            reply_data = json.dumps({'voice': m.voice.file_id})
+            file_id = m.voice.file_id
             caption = m.caption
         elif content_type == 'document':
-            reply_data = m.document.file_id
+            reply_data = json.dumps({'document': m.document.file_id})
+            file_id = m.document.file_id
             caption = m.caption
+        elif content_type == 'audio':
+            reply_data = json.dumps({'audio': m.audio.file_id})
+            file_id = m.audio.file_id
+            caption = m.caption
+        elif content_type == 'video_note':
+            reply_data = json.dumps({'video_note': m.video_note.file_id})
+            file_id = m.video_note.file_id
         
         if reply_data:
             # حذف أي رد موجود لنفس الكلمة
@@ -363,14 +396,18 @@ def handle_add_response(m):
             
             # إضافة الرد الجديد
             cursor.execute(
-                "INSERT INTO responses (chat_id, trigger, reply_type, reply_data, caption) VALUES (?, ?, ?, ?, ?)",
-                (chat_id, trigger, content_type, reply_data, caption)
+                "INSERT INTO responses (chat_id, trigger, reply_type, reply_data, caption, file_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, trigger, content_type, reply_data, caption, file_id)
             )
             conn.commit()
             
-            bot.reply_to(m, f"⌯ تم حفظ الرد على كلمة '{trigger}' بنجاح!")
+            # إرسال تأكيد حسب نوع المحتوى
+            if content_type == 'text':
+                bot.reply_to(m, f"⌯ تم حفظ الرد النصي على كلمة '{trigger}' بنجاح!\nالرد: {reply_data}")
+            else:
+                bot.reply_to(m, f"⌯ تم حفظ الرد ({content_type}) على كلمة '{trigger}' بنجاح!")
         else:
-            bot.reply_to(m, "⌯ نوع المحتوى غير مدعوم!")
+            bot.reply_to(m, "⌯ نوع المحتوى غير مدعوم! أرسل نصًا، صورة، فيديو، ملصق، ملف، أو صوتًا.")
         
         del add_response_state[user_id]
 
@@ -538,7 +575,10 @@ def handle_punishments(m, user_rank):
         
         if "الغاء" in text or "رفع القيود" in text:
             if "حظر" in text:
-                bot.unban_chat_member(chat_id, target_id)
+                try:
+                    bot.unban_chat_member(chat_id, target_id)
+                except:
+                    pass
                 cursor.execute(
                     "DELETE FROM punishments WHERE chat_id = ? AND user_id = ? AND type = 'ban'",
                     (chat_id, target_id)
@@ -553,14 +593,17 @@ def handle_punishments(m, user_rank):
                 bot.reply_to(m, "⌯ تم الغاء الكتم.")
             
             elif "تقييد" in text:
-                bot.restrict_chat_member(
-                    chat_id,
-                    target_id,
-                    can_send_messages=True,
-                    can_send_media_messages=True,
-                    can_send_other_messages=True,
-                    can_add_web_page_previews=True
-                )
+                try:
+                    bot.restrict_chat_member(
+                        chat_id,
+                        target_id,
+                        can_send_messages=True,
+                        can_send_media_messages=True,
+                        can_send_other_messages=True,
+                        can_add_web_page_previews=True
+                    )
+                except:
+                    pass
                 cursor.execute(
                     "DELETE FROM punishments WHERE chat_id = ? AND user_id = ? AND type = 'restrict'",
                     (chat_id, target_id)
@@ -569,15 +612,21 @@ def handle_punishments(m, user_rank):
         
         elif ban_cmd in text:
             if until_time:
-                bot.ban_chat_member(chat_id, target_id, until_date=until_time)
-                cursor.execute(
-                    "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
-                    (chat_id, target_id, 'ban', until_time.isoformat())
-                )
-                bot.reply_to(m, f"⌯ تم حظره لمدة {duration}")
+                try:
+                    bot.ban_chat_member(chat_id, target_id, until_date=until_time)
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
+                        (chat_id, target_id, 'ban', until_time.isoformat())
+                    )
+                    bot.reply_to(m, f"⌯ تم حظره لمدة {duration}")
+                except:
+                    bot.reply_to(m, "⌯ فشل في حظر العضو. تأكد أن البوت لديه صلاحيات.")
             else:
-                bot.ban_chat_member(chat_id, target_id)
-                bot.reply_to(m, "⌯ تم حظره بنجاح.")
+                try:
+                    bot.ban_chat_member(chat_id, target_id)
+                    bot.reply_to(m, "⌯ تم حظره بنجاح.")
+                except:
+                    bot.reply_to(m, "⌯ فشل في حظر العضو. تأكد أن البوت لديه صلاحيات.")
         
         elif mute_cmd in text:
             if until_time:
@@ -595,20 +644,29 @@ def handle_punishments(m, user_rank):
         
         elif restrict_cmd in text:
             if until_time:
-                bot.restrict_chat_member(chat_id, target_id, until_date=until_time, can_send_messages=False)
-                cursor.execute(
-                    "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
-                    (chat_id, target_id, 'restrict', until_time.isoformat())
-                )
-                bot.reply_to(m, f"⌯ تم تقييده لمدة {duration}")
+                try:
+                    bot.restrict_chat_member(chat_id, target_id, until_date=until_time, can_send_messages=False)
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO punishments (chat_id, user_id, type, until) VALUES (?, ?, ?, ?)",
+                        (chat_id, target_id, 'restrict', until_time.isoformat())
+                    )
+                    bot.reply_to(m, f"⌯ تم تقييده لمدة {duration}")
+                except:
+                    bot.reply_to(m, "⌯ فشل في تقييد العضو. تأكد أن البوت لديه صلاحيات.")
             else:
-                bot.restrict_chat_member(chat_id, target_id, can_send_messages=False)
-                bot.reply_to(m, "⌯ تم تقييده بنجاح.")
+                try:
+                    bot.restrict_chat_member(chat_id, target_id, can_send_messages=False)
+                    bot.reply_to(m, "⌯ تم تقييده بنجاح.")
+                except:
+                    bot.reply_to(m, "⌯ فشل في تقييد العضو. تأكد أن البوت لديه صلاحيات.")
         
         elif kick_cmd in text:
-            bot.kick_chat_member(chat_id, target_id)
-            bot.unban_chat_member(chat_id, target_id)
-            bot.reply_to(m, "⌯ تم طرده بنجاح.")
+            try:
+                bot.kick_chat_member(chat_id, target_id)
+                bot.unban_chat_member(chat_id, target_id)
+                bot.reply_to(m, "⌯ تم طرده بنجاح.")
+            except:
+                bot.reply_to(m, "⌯ فشل في طرد العضو. تأكد أن البوت لديه صلاحيات.")
         
         conn.commit()
         
@@ -661,6 +719,8 @@ def handle_locks(m, user_rank):
             bot.reply_to(m, f"⌯ تم فتح {lock_type}")
         
         conn.commit()
+    else:
+        bot.reply_to(m, f"⌯ نوع القفل غير صحيح!\n⌯ الأنواع المتاحة: {', '.join(lock_items.keys())}")
 
 def handle_responses(m, user_rank):
     """معالجة أوامر الردود"""
@@ -670,6 +730,7 @@ def handle_responses(m, user_rank):
     
     if text == "اضف رد":
         if user_rank not in ["مطور", "مالك اساسي", "مالك", "مدير"]:
+            bot.reply_to(m, "⌯ ليس لديك صلاحية لإضافة ردود!")
             return
         
         add_response_state[user_id] = {
@@ -687,16 +748,26 @@ def handle_responses(m, user_rank):
             "DELETE FROM responses WHERE chat_id = ? AND trigger = ?",
             (chat_id, trigger)
         )
+        affected = cursor.rowcount
         conn.commit()
-        bot.reply_to(m, f"⌯ تم مسح الرد على كلمة '{trigger}'")
+        
+        if affected > 0:
+            bot.reply_to(m, f"⌯ تم مسح الرد على كلمة '{trigger}'")
+        else:
+            bot.reply_to(m, f"⌯ لا يوجد رد على كلمة '{trigger}'")
     
     elif text == "مسح الردود":
         if user_rank not in ["مطور", "مالك اساسي", "مالك", "مدير"]:
             return
         
         cursor.execute("DELETE FROM responses WHERE chat_id = ?", (chat_id,))
+        affected = cursor.rowcount
         conn.commit()
-        bot.reply_to(m, "⌯ تم مسح جميع الردود")
+        
+        if affected > 0:
+            bot.reply_to(m, f"⌯ تم مسح {affected} رد")
+        else:
+            bot.reply_to(m, "⌯ لا توجد ردود مضافة")
     
     elif text == "الردود":
         cursor.execute(
@@ -708,8 +779,14 @@ def handle_responses(m, user_rank):
         if not responses:
             bot.reply_to(m, "⌯ لا توجد ردود مضافة.")
         else:
-            response_list = "\n".join([f"• {r[0]} ({r[1]})" for r in responses])
-            bot.reply_to(m, f"⌯ الردود المضافة:\n{response_list}")
+            response_list = []
+            for trigger, reply_type in responses:
+                response_list.append(f"• {trigger} ({reply_type})")
+            
+            response_text = "⌯ الردود المضافة:\n" + "\n".join(response_list)
+            if len(response_text) > 4000:
+                response_text = response_text[:4000] + "..."
+            bot.reply_to(m, response_text)
 
 def handle_customization(m, user_rank):
     """معالجة أوامر التخصيص"""
@@ -719,6 +796,7 @@ def handle_customization(m, user_rank):
     
     if text == "تغيير امر":
         if user_rank not in ["مطور", "مالك اساسي", "مالك", "مدير"]:
+            bot.reply_to(m, "⌯ ليس لديك صلاحية لتغيير الأوامر!")
             return
         
         change_command_state[user_id] = {
@@ -729,6 +807,7 @@ def handle_customization(m, user_rank):
     
     elif text == "تغيير رتبه":
         if user_rank not in ["مطور", "مالك اساسي", "مالك"]:
+            bot.reply_to(m, "⌯ ليس لديك صلاحية لتغيير أسماء الرتب!")
             return
         
         change_rank_state[user_id] = {
@@ -805,7 +884,9 @@ def handle_cleanup(m, user_rank):
     elif any(char.isdigit() for char in text):
         try:
             num = int(''.join(filter(str.isdigit, text)))
-            for i in range(min(num, 100)):
+            num = min(num, 100)  # حد أقصى 100 رسالة
+            
+            for i in range(num):
                 try:
                     bot.delete_message(chat_id, m.message_id - i)
                 except:
@@ -902,20 +983,29 @@ def handle_lists(m, user_rank):
             bot.reply_to(m, response)
 
 def check_locks(m, user_rank):
-    """فحص الأقفال قبل السماح بالرسالة"""
+    """فحص الأقفال قبل السماح بالرسالة - مصحح"""
     chat_id = str(m.chat.id)
+    user_id = m.from_user.id
     
-    # الأعضاء المميزون والمشرفون لا يطبق عليهم القفل (عدا قفل الدردشة)
-    if user_rank not in ["مطور", "مالك اساسي", "مالك", "مدير", "ادمن", "مميز"]:
-        # فحص قفل الدردشة
-        cursor.execute(
-            "SELECT 1 FROM locks WHERE chat_id = ? AND item = 'chat'",
-            (chat_id,)
-        )
-        if cursor.fetchone():
+    # المستويات التي تستثنى من الأقفال (عدا قفل الدردشة)
+    exempt_ranks = ["مطور", "مالك اساسي", "مالك", "مدير", "ادمن", "مميز"]
+    
+    # فحص قفل الدردشة - يسري على الجميع بما فيهم المميزين
+    cursor.execute(
+        "SELECT 1 FROM locks WHERE chat_id = ? AND item = 'chat'",
+        (chat_id,)
+    )
+    if cursor.fetchone() and user_rank not in ["مطور", "مالك اساسي", "مالك", "مدير", "ادمن"]:
+        # المميز لا يطبق عليه قفل الدردشة؟ نعم يطبق عليه حسب طلبك
+        # يمكن تعديل هذا حسب الرغبة
+        try:
             bot.delete_message(chat_id, m.message_id)
-            return False
-        
+        except:
+            pass
+        return False
+    
+    # الأعضاء العاديون فقط يطبق عليهم باقي الأقفال
+    if user_rank not in exempt_ranks:
         # فحص قفل المحتوى
         content_map = {
             'photo': 'photo',
@@ -934,7 +1024,10 @@ def check_locks(m, user_rank):
                 (chat_id, content_map[content_type])
             )
             if cursor.fetchone():
-                bot.delete_message(chat_id, m.message_id)
+                try:
+                    bot.delete_message(chat_id, m.message_id)
+                except:
+                    pass
                 return False
         
         # فحص قفل الكل
@@ -943,17 +1036,23 @@ def check_locks(m, user_rank):
             (chat_id,)
         )
         if cursor.fetchone():
-            bot.delete_message(chat_id, m.message_id)
+            try:
+                bot.delete_message(chat_id, m.message_id)
+            except:
+                pass
             return False
         
         # فحص قفل الروابط
-        if m.text and ('http://' in m.text.lower() or 'https://' in m.text.lower()):
+        if m.text and ('http://' in m.text.lower() or 'https://' in m.text.lower() or 'www.' in m.text.lower()):
             cursor.execute(
                 "SELECT 1 FROM locks WHERE chat_id = ? AND item = 'links'",
                 (chat_id,)
             )
             if cursor.fetchone():
-                bot.delete_message(chat_id, m.message_id)
+                try:
+                    bot.delete_message(chat_id, m.message_id)
+                except:
+                    pass
                 return False
         
         # فحص قفل اليوزرات
@@ -963,79 +1062,140 @@ def check_locks(m, user_rank):
                 (chat_id,)
             )
             if cursor.fetchone():
-                bot.delete_message(chat_id, m.message_id)
+                try:
+                    bot.delete_message(chat_id, m.message_id)
+                except:
+                    pass
                 return False
     
     return True
 
 def check_auto_responses(m, chat_id):
-    """فحص الردود التلقائية"""
+    """فحص الردود التلقائية - مصحح"""
     if not m.text:
         return
     
     cursor.execute(
-        "SELECT reply_type, reply_data, caption FROM responses WHERE chat_id = ? AND trigger = ?",
+        "SELECT reply_type, reply_data, caption, file_id FROM responses WHERE chat_id = ? AND trigger = ?",
         (chat_id, m.text)
     )
     result = cursor.fetchone()
     
     if result:
-        reply_type, reply_data, caption = result
+        reply_type, reply_data, caption, file_id = result
         
         try:
             if reply_type == 'text':
                 bot.reply_to(m, reply_data)
             
             elif reply_type == 'photo':
+                photo_data = json.loads(reply_data)
                 bot.send_photo(
                     m.chat.id,
-                    reply_data,
+                    photo_data.get('photo', file_id),
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             
             elif reply_type == 'video':
+                video_data = json.loads(reply_data)
                 bot.send_video(
                     m.chat.id,
-                    reply_data,
+                    video_data.get('video', file_id),
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             
             elif reply_type == 'sticker':
+                sticker_data = json.loads(reply_data)
                 bot.send_sticker(
                     m.chat.id,
-                    reply_data,
+                    sticker_data.get('sticker', file_id),
                     reply_to_message_id=m.message_id
                 )
             
             elif reply_type == 'animation':
+                anim_data = json.loads(reply_data)
                 bot.send_animation(
                     m.chat.id,
-                    reply_data,
+                    anim_data.get('animation', file_id),
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             
             elif reply_type == 'voice':
+                voice_data = json.loads(reply_data)
                 bot.send_voice(
                     m.chat.id,
-                    reply_data,
+                    voice_data.get('voice', file_id),
                     caption=caption,
                     reply_to_message_id=m.message_id
                 )
             
             elif reply_type == 'document':
+                doc_data = json.loads(reply_data)
                 bot.send_document(
                     m.chat.id,
-                    reply_data,
+                    doc_data.get('document', file_id),
                     caption=caption,
+                    reply_to_message_id=m.message_id
+                )
+            
+            elif reply_type == 'audio':
+                audio_data = json.loads(reply_data)
+                bot.send_audio(
+                    m.chat.id,
+                    audio_data.get('audio', file_id),
+                    caption=caption,
+                    reply_to_message_id=m.message_id
+                )
+            
+            elif reply_type == 'video_note':
+                vnote_data = json.loads(reply_data)
+                bot.send_video_note(
+                    m.chat.id,
+                    vnote_data.get('video_note', file_id),
                     reply_to_message_id=m.message_id
                 )
         
         except Exception as e:
             print(f"Error sending auto-response: {e}")
 
+# --- [ أوامر البداية ] ---
+@bot.message_handler(commands=['start'])
+def start_command(m):
+    response = """
+🎯 *مرحباً بك في بوت الإدارة المتكامل!*
+
+🛠 *المميزات المتاحة:*
+1️⃣ *نظام الإدارة والعقوبات*
+   - كتم/حظر/تقييد بمدة زمنية
+   - الغاء العقوبات
+   - هرمية الرتب
+
+2️⃣ *نظام الأقفال*
+   - قفل/فتح أنواع المحتوى
+   - المميزون مستثنون من الأقفال (عدا قفل الدردشة)
+
+3️⃣ *نظام الردود الذكية*
+   - إضافة ردود بأنواع مختلفة
+   - مسح وعرض الردود
+
+4️⃣ *نظام التخصيص*
+   - تغيير أسماء الأوامر
+   - تغيير أسماء الرتب
+
+📋 *الأوامر الأساسية:*
+• `ايدي` - لعرض معلوماتك
+• `رتبتي` - لمعرفة رتبتك
+• `الردود` - لعرض الردود المضافة
+
+⚙️ *للاستفسار:* @cEbot
+"""
+    bot.reply_to(m, response, parse_mode="Markdown")
+
 # --- [ تشغيل البوت ] ---
 print("✅ البوت يعمل بنجاح!")
+print(f"👤 المطور: @{DEV_USERNAME}")
+print("🔄 في انتظار الرسائل...")
 bot.infinity_polling()
